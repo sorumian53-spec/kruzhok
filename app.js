@@ -1,0 +1,1318 @@
+(function(){
+'use strict';
+
+/* =====================================================================
+   Кружок: сайт знакомств по интересам. Версия 2.
+   ===================================================================== */
+
+/* ---------- настройки и подключение ---------- */
+const CFG=window.KRUZHOK_CONFIG||{};
+const URL_OK=/^https:\/\/[a-z0-9-]+\.supabase\.co\/?$/i.test(CFG.url||'');
+const KEY_OK=typeof CFG.key==='string'&&CFG.key.length>20&&!/[А-Яа-яЁё]/.test(CFG.key);
+function keyProblem(k){
+  if(/^sb_secret_/.test(k))return true;
+  const p=String(k).split('.');
+  if(p.length===3){try{const j=JSON.parse(atob(p[1].replace(/-/g,'+').replace(/_/g,'/')));if(j.role==='service_role')return true;}catch(e){}}
+  return false;
+}
+const SECRET_KEY=KEY_OK&&keyProblem(CFG.key);
+const LIB_OK=!!(window.supabase&&window.supabase.createClient);
+const SB_OK=URL_OK&&KEY_OK&&!SECRET_KEY&&LIB_OK;
+const BASE=URL_OK?CFG.url.replace(/\/+$/,''):'';
+const sb=SB_OK?window.supabase.createClient(BASE,CFG.key,{auth:{persistSession:true,autoRefreshToken:true,detectSessionInUrl:false}}):null;
+
+/* ---------- вспомогательное ---------- */
+const $=(s,r)=>(r||document).querySelector(s);
+const esc=s=>String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const plural=(n,f)=>{const a=Math.abs(n)%100,b=a%10;if(a>10&&a<20)return f[2];if(b>1&&b<5)return f[1];if(b===1)return f[0];return f[2];};
+const ageText=n=>n+' '+plural(n,['год','года','лет']);
+const ymd=d=>d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const hueOf=id=>{let h=0;const s=String(id);for(let k=0;k<s.length;k++)h=(h*31+s.charCodeAt(k))%360;return h;};
+const cityKey=s=>String(s||'').trim().toLowerCase().replace(/ё/g,'е').replace(/-/g,' ').replace(/\s+/g,' ');
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+
+const CATS={sport:'Спорт и активность',games:'Игры',creative:'Творчество',music:'Музыка',culture:'Кино, книги, театр',travel:'Путешествия и походы',food:'Еда и напитки',learning:'Учёба и языки',tech:'Технологии',other:'Другое'};
+const FORMATS={offline:'Офлайн',online:'Онлайн',both:'Онлайн и офлайн'};
+const NOTIFY={all:'Все новые встречи',fit:'Только подходящие мне',off:'Не уведомлять'};
+const REASONS={spam:'Спам или реклама',abuse:'Оскорбления или угрозы',fake:'Фальшивый профиль',photo:'Неприемлемое фото',scam:'Мошенничество',other:'Другое'};
+const TARGETS={user:'Профиль',topic:'Тема',comment:'Ответ в теме',chat:'Сообщение в чате',dm:'Личное сообщение',interest:'Интерес',meetup:'Встреча'};
+const GENDER={any:'для всех',f:'только женщины',m:'только мужчины'};
+const GHOST={name:'Пользователь',hue:200};
+const HUES=[190,40,350,260,120,300];
+const PCOLS='id,name,age,city,gender,about,photo_url';
+
+function ago(iso){
+  const s=(Date.now()-new Date(iso).getTime())/1000;
+  if(s<60)return 'только что';
+  const m=Math.floor(s/60);if(m<60)return m+' мин назад';
+  const h=Math.floor(m/60);if(h<24)return h+' ч назад';
+  const d=Math.floor(h/24);if(d===1)return 'вчера';
+  if(d<7)return d+' '+plural(d,['день','дня','дней'])+' назад';
+  return new Date(iso).toLocaleDateString('ru-RU',{day:'numeric',month:'long'});
+}
+const clock=iso=>new Date(iso).toLocaleTimeString('ru-RU',{hour:'2-digit',minute:'2-digit'});
+function when(d){return d.toLocaleDateString('ru-RU',{weekday:'short',day:'numeric',month:'long'})+', '+d.toLocaleTimeString('ru-RU',{hour:'2-digit',minute:'2-digit'});}
+
+function errText(e){
+  const m=(e&&e.message)||String(e||'');
+  const c=e&&e.code;
+  if(/Invalid login credentials/i.test(m))return 'Неверная почта или пароль.';
+  if(/already registered|already been registered/i.test(m))return 'Эта почта уже зарегистрирована. Попробуйте войти.';
+  if(/Password should be at least/i.test(m))return 'Пароль слишком короткий: нужно не меньше 6 символов.';
+  if(/valid email|invalid format|Unable to validate email/i.test(m))return 'Проверьте адрес почты.';
+  if(/rate limit|too many/i.test(m))return 'Слишком много попыток. Подождите немного и повторите.';
+  if(c==='23505'){
+    if(/reports_once_open/.test(m))return 'Вы уже отправили жалобу на это. Мы её рассматриваем.';
+    if(/interests_title/.test(m))return 'Такой интерес уже есть. Найдите его в списке и вступите.';
+    return 'Такая запись уже есть.';
+  }
+  if(c==='42501'||/row-level security|permission denied/i.test(m))return 'Это действие недоступно. Возможно, вы не участник интереса, у вас нет общего интереса с этим человеком или аккаунт ограничен.';
+  if(/Failed to fetch|NetworkError|Load failed|network/i.test(m))return 'Нет связи с сервером. Проверьте интернет и повторите.';
+  if(/Database error saving new user/i.test(m))return 'Не удалось создать профиль. Проверьте, что вам есть 18 лет, а город и остальные поля заполнены.';
+  if(c==='23514'||/check constraint/i.test(m))return 'Проверьте значения полей: что-то не подходит по длине или формату.';
+  return m||'Что-то пошло не так. Повторите попытку.';
+}
+const safePhoto=u=>(u&&BASE&&String(u).indexOf(BASE+'/storage/v1/object/public/avatars/')===0)?u:null;
+const safeUrl=u=>/^https?:\/\/[^\s<>"']+$/i.test(String(u||''))?u:null;
+
+/* ---------- состояние ---------- */
+const state={
+  session:null,me:null,status:{is_admin:false,banned:false},
+  view:'home',arg:null,tab:null,pendingTab:null,topic:null,
+  q:'',onlyMine:false,cat:'',fmt:'',
+  f:{city:'',interest:'',gender:'',age:'',format:''},
+  after:null,authMode:'signup',notice:'',photoFile:null,photoUrl:null,
+  loaded:false,loadError:'',unreadN:0,unreadDM:0,openReports:0,adminTab:'reports'
+};
+let PEOPLE={},I=[],M=[],LINKS={},BLOCKED=new Set(),NOTES=[];
+let CONVOS=null,ADMIN={reports:[],banned:new Set(),cities:[]};
+const live={chatId:null,chatSig:'',threadId:null,threadSig:''};
+const MSG={};
+const cache={chat:{},dm:{}};
+const interest=id=>I.find(i=>i.id===id);
+const who=id=>PEOPLE[id]||GHOST;
+const has=arr=>!!(state.me&&arr.includes(state.me.id));
+const isMe=id=>!!(state.me&&state.me.id===id);
+const curTab=i=>state.tab||(has(i.members)?'chat':'talks');
+function clearData(){PEOPLE={};I=[];M=[];LINKS={};BLOCKED=new Set();NOTES=[];CONVOS=null;state.me=null;state.loaded=false;state.status={is_admin:false,banned:false};state.unreadN=0;state.unreadDM=0;state.openReports=0;live.chatId=null;live.threadId=null;cache.chat={};cache.dm={};ADMIN.loaded=false;}
+
+/* ---------- загрузка данных ---------- */
+let loadSeq=0;
+async function reload(){
+  if(!state.session){clearData();return;}
+  const seq=++loadSeq;
+  const since=new Date(Date.now()-3*3600*1000).toISOString();
+  const res=await Promise.all([
+    sb.from('profiles').select(PCOLS),
+    sb.from('interests').select('id,title,description,hue,owner_id,category,tags,format,city,created_at').order('created_at',{ascending:false}),
+    sb.from('interest_members').select('interest_id,user_id,notify'),
+    sb.from('meetups').select('id,interest_id,host_id,title,description,format,city,place,starts_at,age_min,age_max,gender,max_people').gte('starts_at',since).order('starts_at',{ascending:true}),
+    sb.from('meetup_going').select('meetup_id,user_id'),
+    sb.from('meetup_links').select('meetup_id,url'),
+    sb.from('topics').select('id,interest_id,author_id,title,body,created_at').order('created_at',{ascending:false}),
+    sb.from('comments').select('id,topic_id,author_id,body,created_at').order('created_at',{ascending:true}),
+    sb.from('blocks').select('blocked_id'),
+    sb.from('notifications').select('id,kind,title,body,link,read_at,created_at').order('created_at',{ascending:false}).limit(40),
+    sb.rpc('my_status')
+  ]);
+  const bad=res.find(r=>r.error);
+  if(bad)throw bad.error;
+  if(seq!==loadSeq)return;
+  const uid=state.session.user.id;
+  const people={};
+  res[0].data.forEach(p=>{people[p.id]=mkPerson(p);});
+  const byI={};
+  const ints=res[1].data.map(r=>{const o={id:r.id,title:r.title,desc:r.description,hue:r.hue,owner:r.owner_id,cat:r.category||'other',tags:r.tags||[],format:r.format||'both',city:r.city||'',members:[],notify:'all',topics:[]};byI[o.id]=o;return o;});
+  res[2].data.forEach(r=>{const o=byI[r.interest_id];if(!o)return;o.members.push(r.user_id);if(r.user_id===uid)o.notify=r.notify||'all';});
+  const byT={};
+  res[6].data.forEach(r=>{const o=byI[r.interest_id];if(!o)return;const t={id:r.id,title:r.title,a:r.author_id,text:r.body||'',at:r.created_at,comments:[]};byT[t.id]=t;o.topics.push(t);});
+  res[7].data.forEach(r=>{const t=byT[r.topic_id];if(t)t.comments.push({id:r.id,a:r.author_id,t:r.body,at:r.created_at});});
+  const byM={};
+  const meets=res[3].data.map(r=>{const o={id:r.id,interestId:r.interest_id,host:r.host_id,title:r.title,desc:r.description||'',format:r.format||'offline',city:r.city||'',place:r.place,when:new Date(r.starts_at),ageMin:r.age_min,ageMax:r.age_max,g:r.gender,max:r.max_people,going:[]};byM[o.id]=o;return o;});
+  res[4].data.forEach(r=>{const o=byM[r.meetup_id];if(o)o.going.push(r.user_id);});
+  const links={};res[5].data.forEach(r=>{links[r.meetup_id]=r.url;});
+  PEOPLE=people;I=ints;M=meets;LINKS=links;
+  BLOCKED=new Set(res[8].data.map(r=>r.blocked_id));
+  NOTES=res[9].data;
+  const st=(res[10].data&&res[10].data[0])||{};
+  state.status={is_admin:!!st.is_admin,banned:!!st.banned};
+  state.me=people[uid]||null;
+  state.unreadN=NOTES.filter(n=>!n.read_at).length;
+  state.loaded=true;
+}
+function mkPerson(p){return {id:p.id,name:p.name,age:p.age,city:p.city,g:p.gender,about:p.about||'',photo:safePhoto(p.photo_url),hue:hueOf(p.id)};}
+async function ensurePeople(ids){
+  const miss=[...new Set(ids)].filter(id=>id&&!PEOPLE[id]);
+  if(!miss.length)return;
+  const r=await sb.from('profiles').select(PCOLS).in('id',miss);
+  if(!r.error)r.data.forEach(p=>{PEOPLE[p.id]=mkPerson(p);});
+}
+async function refreshCounts(){
+  if(!state.session||!state.me)return;
+  try{
+    const jobs=[
+      sb.from('notifications').select('id',{count:'exact',head:true}).is('read_at',null),
+      sb.from('direct_messages').select('id',{count:'exact',head:true}).eq('recipient_id',state.me.id).is('read_at',null),
+      sb.rpc('my_status')
+    ];
+    if(state.status.is_admin)jobs.push(sb.from('reports').select('id',{count:'exact',head:true}).eq('status','open'));
+    const r=await Promise.all(jobs);
+    if(!r[0].error)state.unreadN=r[0].count||0;
+    if(!r[1].error)state.unreadDM=r[1].count||0;
+    if(r[3]&&!r[3].error)state.openReports=r[3].count||0;
+    const st=!r[2].error&&r[2].data&&r[2].data[0];
+    if(st&&(!!st.banned!==state.status.banned||!!st.is_admin!==state.status.is_admin)){
+      state.status={is_admin:!!st.is_admin,banned:!!st.banned};
+      if(!document.querySelector('#ov')||$('#ov').hidden)render();
+    }
+    renderTop();
+  }catch(e){}
+}
+
+/* ---------- кусочки интерфейса ---------- */
+function av(p,size){
+  const cls='av av-'+(size||'md');
+  if(p&&p.photo)return '<span class="'+cls+'"><img src="'+esc(p.photo)+'" alt=""></span>';
+  const name=(p&&p.name)||'?';
+  return '<span class="'+cls+' tint" style="--h:'+(p&&p.hue!=null?p.hue:200)+'">'+esc(name.trim().charAt(0)||'?')+'</span>';
+}
+const avLink=(id,size)=>PEOPLE[id]?'<a href="#user-'+esc(id)+'" aria-label="Профиль: '+esc(who(id).name)+'">'+av(who(id),size)+'</a>':av(GHOST,size);
+const pLink=id=>PEOPLE[id]?'<a class="plink" href="#user-'+esc(id)+'">'+esc(who(id).name)+'</a>':'<span class="plink">'+esc(who(id).name)+'</span>';
+const badge=(i,lg)=>'<span class="badge'+(lg?' lg':'')+' tint" style="--h:'+esc(i.hue)+'">'+esc(i.title.charAt(0))+'</span>';
+function fld(label,id,inner){return '<div class="field"><label for="'+id+'">'+label+'</label>'+inner+'</div>';}
+function opts(arr,val){return arr.map(a=>'<option value="'+esc(a[0])+'"'+(a[0]===val?' selected':'')+'>'+esc(a[1])+'</option>').join('');}
+function segs(name,items,val,label){
+  return '<div class="segs" role="radiogroup" aria-label="'+esc(label)+'">'+items.map(it=>'<label class="seg"><input type="radio" name="'+name+'" value="'+esc(it[0])+'"'+(it[0]===val?' checked':'')+'><span>'+esc(it[1])+'</span></label>').join('')+'</div>';
+}
+function genderSegs(name,val){return segs(name,[['f','Женщина'],['m','Мужчина']],val,'Пол');}
+function swatches(val){
+  return '<div class="swatches" role="radiogroup" aria-label="Цвет">'+HUES.map((h,k)=>'<label class="sw" style="--h:'+h+'"><input type="radio" name="hue" value="'+h+'"'+((val==null?k===0:h===val)?' checked':'')+'><span class="c"></span><span class="sr">Цвет '+(k+1)+'</span></label>').join('')+'</div>';
+}
+function cityField(id,label,value,ph){
+  return '<div class="field"><label for="'+id+'">'+label+'</label><div class="combo"><input type="text" id="'+id+'" class="cityin" data-list="'+id+'-list" role="combobox" aria-expanded="false" aria-autocomplete="list" aria-controls="'+id+'-list" autocomplete="off" maxlength="60" placeholder="'+esc(ph||'Начните вводить город')+'" value="'+esc(value||'')+'"><ul class="combo-list" id="'+id+'-list" role="listbox" hidden></ul></div></div>';
+}
+function shared(a,b){return I.some(i=>i.members.includes(a)&&i.members.includes(b));}
+function commonWith(id){return I.filter(i=>has(i.members)&&i.members.includes(id));}
+function canDM(id){return !!state.me&&id!==state.me.id&&shared(state.me.id,id)&&!BLOCKED.has(id);}
+function catChip(i){return '<span class="chip plain">'+esc(CATS[i.cat]||CATS.other)+'</span>';}
+function fmtChip(i){return '<span class="chip plain">'+esc(FORMATS[i.format]||'')+(i.city&&i.format!=='online'?' · '+esc(i.city):'')+'</span>';}
+
+function cardInterest(i){
+  const joined=has(i.members),n=i.members.length;
+  return '<article class="icard"><a class="icard-main" href="#interest-'+esc(i.id)+'">'+badge(i)+'<h3>'+esc(i.title)+'</h3>'+
+    '<div class="chips-row">'+catChip(i)+fmtChip(i)+'</div><p>'+esc(i.desc)+'</p>'+
+    (i.tags.length?'<div class="icard-tags">'+i.tags.slice(0,4).map(t=>'<span class="tag">'+esc(t)+'</span>').join('')+'</div>':'')+'</a>'+
+    '<div class="icard-foot"><span class="meta">'+n+' '+plural(n,['участник','участника','участников'])+'</span>'+
+    '<button class="btn sm'+(joined?' on':' primary')+'" type="button" data-act="join-interest" data-id="'+esc(i.id)+'">'+(joined?'Вы участник':'Вступить')+'</button></div></article>';
+}
+
+function cardMeetup(m){
+  const it=interest(m.interestId)||{title:'Интерес',hue:200,id:''};
+  const d=m.when,going=has(m.going),full=m.going.length>=m.max;
+  const online=m.format==='online';
+  const month=d.toLocaleDateString('ru-RU',{month:'short'}).replace('.','');
+  const wd=d.toLocaleDateString('ru-RU',{weekday:'short'});
+  const time=d.toLocaleTimeString('ru-RU',{hour:'2-digit',minute:'2-digit'});
+  const faces=m.going.slice(0,4).map(id=>avLink(id,'sm')).join('');
+  const url=going&&LINKS[m.id]?safeUrl(LINKS[m.id]):null;
+  const mine=state.me&&m.host===state.me.id;
+  const canDel=mine||state.status.is_admin;
+  return '<article class="mcard"><div class="date"><b>'+d.getDate()+'</b><span>'+esc(month)+'</span></div>'+
+    '<div class="mbody"><div class="chips-row"><a class="chip tint" style="--h:'+esc(it.hue)+'" href="#interest-'+esc(it.id)+'">'+esc(it.title)+'</a><span class="chip plain">'+(online?'Онлайн':'Офлайн')+'</span></div>'+
+    '<h3>'+esc(m.title)+'</h3>'+
+    '<p class="meta">'+esc(wd)+', '+esc(time)+' · '+(online?'Платформа: '+esc(m.place):esc(m.place)+', '+esc(m.city))+'</p>'+
+    '<p class="meta">Возраст '+m.ageMin+'–'+m.ageMax+' · '+GENDER[m.g]+(m.host?' · Организатор: '+pLink(m.host):'')+'</p>'+
+    (m.desc?'<p class="desc">'+esc(m.desc)+'</p>':'')+
+    (online&&going?'<p class="linkrow">'+(url?'Ссылка: <a href="'+esc(url)+'" target="_blank" rel="noopener noreferrer">'+esc(url)+'</a>':'Ссылку организатор не указал.')+'</p>':'')+
+    (online&&!going?'<p class="meta">Ссылка станет видна после записи.</p>':'')+'</div>'+
+    '<div class="maside"><div class="going">'+faces+'</div><span class="meta">'+m.going.length+' из '+m.max+'</span>'+
+    '<button class="btn sm'+(going?' on':' primary')+'" type="button" data-act="join-meetup" data-id="'+esc(m.id)+'"'+(full&&!going?' disabled':'')+'>'+(going?'Вы идёте':(full?'Мест нет':'Пойду'))+'</button>'+
+    '<div class="acts">'+(canDel?'<button class="lnk danger" type="button" data-act="del-meetup" data-id="'+esc(m.id)+'">Удалить</button>':'')+
+    (!mine?'<button class="lnk" type="button" data-act="report" data-type="meetup" data-id="'+esc(m.id)+'">Пожаловаться</button>':'')+'</div></div></article>';
+}
+
+function personCard(p,common){
+  const names=common.slice(0,3).map(i=>esc(i.title)).join(', ');
+  return '<article class="pcard"><div class="top2">'+avLink(p.id,'md')+'<div>'+pLink(p.id)+'<span class="meta">'+ageText(p.age)+' · '+esc(p.city)+'</span></div></div>'+
+    (common.length?'<p class="common">Общие интересы: '+names+(common.length>3?' и ещё '+(common.length-3):'')+'</p>':'')+
+    '<div class="row"><a class="btn sm" href="#user-'+esc(p.id)+'">Профиль</a>'+(canDM(p.id)?'<a class="btn sm primary" href="#messages-'+esc(p.id)+'">Написать</a>':'')+'</div></article>';
+}
+
+/* ---------- рекомендации ---------- */
+function recoPeople(){
+  const me=state.me;
+  const out=[];
+  Object.values(PEOPLE).forEach(p=>{
+    if(p.id===me.id||BLOCKED.has(p.id))return;
+    const common=commonWith(p.id);
+    if(!common.length)return;
+    out.push({p,common,score:common.length*3+(p.city===me.city?2:0)-Math.min(Math.abs(p.age-me.age),20)/20});
+  });
+  return out.sort((a,b)=>b.score-a.score).slice(0,6);
+}
+function recoInterests(){
+  const me=state.me;
+  const mates=new Set();
+  I.forEach(i=>{if(has(i.members))i.members.forEach(id=>{if(id!==me.id)mates.add(id);});});
+  const out=[];
+  I.forEach(i=>{
+    if(has(i.members))return;
+    const overlap=i.members.filter(id=>mates.has(id)).length;
+    const local=i.members.filter(id=>PEOPLE[id]&&PEOPLE[id].city===me.city).length;
+    const score=overlap*3+local*2+(i.city&&i.city===me.city?3:0)+Math.log(1+i.members.length);
+    out.push({i,overlap,local,score});
+  });
+  return out.sort((a,b)=>b.score-a.score).slice(0,4);
+}
+function fitsMe(m){
+  const me=state.me;
+  if(me.age<m.ageMin||me.age>m.ageMax)return false;
+  if(m.g!=='any'&&m.g!==me.g)return false;
+  return true;
+}
+
+/* ---------- экраны: общее ---------- */
+function vSetup(){
+  let why;
+  if(!URL_OK||!KEY_OK)why='Сайт пока не подключён к базе данных. Откройте файл <code>config.js</code> и вставьте адрес проекта и публичный ключ из Supabase.';
+  else if(SECRET_KEY)why='В файле <code>config.js</code> указан секретный ключ. Его нельзя использовать на сайте. Замените его на публичный ключ «anon public» («publishable key») и никому не показывайте секретный.';
+  else why='Не загрузилась библиотека <code>supabase.js</code>. Проверьте, что файл лежит рядом с <code>index.html</code> и загружен на хостинг.';
+  return '<div class="vhead"><h1>Нужна настройка</h1></div><div class="banner" role="alert"><p>'+why+'</p></div>';
+}
+function vLoading(){return '<p class="meta" style="padding:24px 0">Загружаем…</p>';}
+function vLoadError(){
+  return '<div class="banner" role="alert"><p>Не удалось загрузить данные: '+esc(state.loadError)+'</p><p style="margin-top:6px">Если вы только что обновили сайт, проверьте, что в Supabase выполнен новый файл <code>database.sql</code>.</p></div><p style="margin-top:14px"><button class="btn primary" type="button" data-act="retry">Повторить</button></p>';
+}
+function vGate(v){
+  const titles={interests:'Интересы',meetups:'Встречи',messages:'Сообщения',thread:'Сообщения',notifications:'Уведомления',interest:'Интерес',user:'Профиль человека',admin:'Модерация'};
+  return '<div class="vhead"><h1>'+(titles[v]||'Кружок')+'</h1></div><div class="empty"><p>Это видят только зарегистрированные пользователи.</p><div class="row"><a class="btn primary" href="#profile">Войти или зарегистрироваться</a></div></div>';
+}
+function vNoProfile(){
+  return '<div class="banner" role="alert"><p>Для этого входа не нашёлся профиль. Выйдите и зарегистрируйтесь заново.</p></div><p style="margin-top:14px"><button class="btn" type="button" data-act="logout">Выйти</button></p>';
+}
+function bannedBanner(){
+  return '<div class="banner" role="alert" style="margin-bottom:18px"><p>Ваш аккаунт ограничен модератором. Вы можете читать, но не можете писать и создавать новое.</p></div>';
+}
+
+/* ---------- главная ---------- */
+function how(h,t,p){return '<div><span class="dot" style="background:oklch(.72 .13 '+h+')"></span><h3>'+t+'</h3><p class="meta" style="font-size:.95rem">'+p+'</p></div>';}
+function vHome(){
+  const logged=!!state.session;
+  const buttons=logged
+    ?'<a class="btn primary" href="#interests">Смотреть интересы</a><button class="btn" type="button" data-act="new-interest">Создать свой интерес</button>'
+    :'<a class="btn primary" href="#profile">Зарегистрироваться</a><a class="btn" href="#profile" data-act="to-login">Войти</a>';
+  const hero='<section class="hero"><div class="hero-text"><p class="eyebrow">Знакомства по интересам</p>'+
+    '<h1>'+(logged&&state.me?esc(state.me.name.split(' ')[0])+', найдите людей со своими интересами':'Найдите людей, которым интересно то же, что и вам')+'</h1>'+
+    '<p class="lead">Создайте свой интерес или вступите в чужой. Общайтесь в чате, назначайте встречи в своём городе или онлайн.</p>'+
+    '<div class="row">'+buttons+'</div></div>'+
+    '<svg class="hero-art" viewBox="0 0 420 360" role="img" aria-label="Три пересекающихся круга: бег, книги, кофе. В середине вы."><circle class="hc c1" cx="150" cy="130" r="110"/><circle class="hc c2" cx="270" cy="130" r="110"/><circle class="hc c3" cx="210" cy="230" r="110"/>'+
+    '<text x="100" y="112" text-anchor="middle">Бег</text><text x="320" y="112" text-anchor="middle">Книги</text><text x="210" y="300" text-anchor="middle">Кофе</text>'+
+    '<circle class="you" cx="210" cy="168" r="22"/><text class="you-t" x="210" y="173" text-anchor="middle">Вы</text></svg></section>';
+  if(!logged||!state.loaded||!state.me){
+    return hero+'<section class="section"><h2 style="margin-bottom:18px">Как устроен сайт</h2><div class="how-grid">'+
+      how(190,'Свой интерес','Придумайте любой интерес, опишите его и задайте параметры.')+
+      how(40,'Присоединяйтесь','Вступайте в интересы, где уже собираются люди, и общайтесь в общем чате.')+
+      how(350,'Встречи','Участники интереса назначают встречи онлайн и офлайн. Фильтры по городу, возрасту и полу помогут найти подходящую.')+
+      how(260,'Знакомства','Пишите людям с общими интересами в личные сообщения.')+'</div></section>';
+  }
+  const mine=M.filter(m=>has(m.going)).sort((a,b)=>a.when-b.when).slice(0,3);
+  const near=M.filter(m=>!has(m.going)&&fitsMe(m)&&(m.format==='online'||m.city===state.me.city)&&m.going.length<m.max).sort((a,b)=>a.when-b.when).slice(0,3);
+  const ri=recoInterests(),rp=recoPeople();
+  let html=hero;
+  if(mine.length)html+='<section class="section"><div class="rowhead"><h2>Вы идёте</h2><a class="btn sm" href="#meetups">Все встречи</a></div><div class="mlist">'+mine.map(cardMeetup).join('')+'</div></section>';
+  html+='<section class="section"><div class="rowhead"><h2>Интересы для вас</h2><a class="btn sm" href="#interests">Все интересы</a></div>'+
+    (ri.length?'<div class="grid">'+ri.map(x=>cardInterest(x.i)).join('')+'</div>':'<div class="empty"><p>Интересов пока нет. Создайте первый.</p><button class="btn primary" type="button" data-act="new-interest">Создать интерес</button></div>')+'</section>';
+  if(rp.length)html+='<section class="section"><div class="rowhead"><h2>Люди с общими интересами</h2></div><div class="reco">'+rp.map(x=>personCard(x.p,x.common)).join('')+'</div></section>';
+  html+='<section class="section"><div class="rowhead"><h2>Встречи для вас</h2><a class="btn sm" href="#meetups">Все встречи</a></div>'+
+    (near.length?'<div class="mlist">'+near.map(cardMeetup).join('')+'</div>':'<div class="empty"><p>Подходящих встреч в вашем городе и онлайн пока нет.</p><a class="btn" href="#meetups">Посмотреть все встречи</a></div>')+'</section>';
+  return html;
+}
+
+/* ---------- интересы ---------- */
+function vInterests(){
+  return '<div class="vhead"><h1>Интересы</h1><button class="btn primary" type="button" data-act="new-interest">Создать интерес</button></div>'+
+    '<div class="tools"><div class="search"><label class="sr" for="q">Поиск по интересам</label><input type="search" id="q" placeholder="Поиск: бег, книги, кофе" value="'+esc(state.q)+'"></div>'+
+    '<label class="sr" for="cat">Категория</label><select id="cat" style="width:auto">'+opts([['','Все категории']].concat(Object.entries(CATS)),state.cat)+'</select>'+
+    '<label class="sr" for="fmt">Формат</label><select id="fmt" style="width:auto">'+opts([['','Любой формат'],['offline','Офлайн'],['online','Онлайн']],state.fmt)+'</select>'+
+    '<button class="btn'+(state.onlyMine?' on':'')+'" type="button" data-act="toggle-mine" aria-pressed="'+state.onlyMine+'">Только мои</button></div>'+
+    '<p class="meta" id="icount" style="margin-bottom:12px"></p><div id="ihint"></div><div class="grid" id="igrid"></div>';
+}
+function fillInterests(){
+  if(!$('#igrid'))return;
+  const q=state.q.trim(),k=cityKey(q);
+  const list=I.filter(i=>{
+    if(state.onlyMine&&!has(i.members))return false;
+    if(state.cat&&i.cat!==state.cat)return false;
+    if(state.fmt&&i.format!==state.fmt&&i.format!=='both')return false;
+    if(!k)return true;
+    const hay=cityKey(i.title+' '+i.desc+' '+i.tags.join(' ')+' '+(CATS[i.cat]||'')+' '+i.city);
+    return k.split(' ').every(w=>hay.includes(w));
+  });
+  $('#icount').textContent='Найдено: '+list.length;
+  const exact=q&&I.some(i=>cityKey(i.title)===k);
+  $('#ihint').innerHTML=(q.length>=2&&!exact)
+    ?'<div class="create-hint"><p>'+(list.length?'Не нашли то, что искали?':'Интереса «'+esc(q)+'» пока никто не создал.')+'</p><button class="btn primary" type="button" data-act="new-interest" data-title="'+esc(q)+'">Создать интерес «'+esc(q.length>30?q.slice(0,30)+'…':q)+'»</button></div>':'';
+  $('#igrid').innerHTML=list.length?list.map(cardInterest).join(''):
+    (q?'':'<div class="empty" style="grid-column:1/-1"><p>'+(state.onlyMine?'Вы пока не вступили ни в один интерес.':'Интересов с такими параметрами нет.')+'</p><button class="btn primary" type="button" data-act="new-interest">Создать интерес</button></div>');
+}
+
+function vInterest(){
+  const i=interest(state.arg);
+  if(!i)return '<div class="empty"><p>Такого интереса нет.</p><a class="btn" href="#interests">К списку интересов</a></div>';
+  const joined=has(i.members),n=i.members.length;
+  const ownerHtml=i.owner&&PEOPLE[i.owner]?pLink(i.owner)+(isMe(i.owner)?' (вы)':''):'команда «Кружка»';
+  const meets=M.filter(m=>m.interestId===i.id).length;
+  const tab=curTab(i);
+  const tabs=[['chat','Чат'],['talks','Обсуждения ('+i.topics.length+')'],['meets','Встречи ('+meets+')'],['people','Участники ('+n+')']];
+  const mineOwner=isMe(i.owner);
+  const actions='<div class="actions">'+
+    (joined?'<div class="notify"><label for="notify-sel">Уведомления о встречах</label><select id="notify-sel">'+opts(Object.entries(NOTIFY),i.notify)+'</select></div>':'')+
+    '<button class="btn'+(joined?' on':' primary')+'" type="button" data-act="join-interest" data-id="'+esc(i.id)+'">'+(joined?'Вы участник':'Вступить')+'</button></div>';
+  const sub='<div class="subtools">'+(mineOwner?'<button class="lnk" type="button" data-act="edit-interest" data-id="'+esc(i.id)+'">Редактировать</button>':'')+
+    ((mineOwner||state.status.is_admin)?'<button class="lnk danger" type="button" data-act="del-interest" data-id="'+esc(i.id)+'">Удалить интерес</button>':'')+
+    (!mineOwner?'<button class="lnk" type="button" data-act="report" data-type="interest" data-id="'+esc(i.id)+'">Пожаловаться</button>':'')+'</div>';
+  return '<a class="back" href="#interests">← Все интересы</a>'+
+    '<header class="ihead">'+badge(i,true)+'<div><h1>'+esc(i.title)+'</h1><div class="chips-row">'+catChip(i)+fmtChip(i)+'</div><p class="lead">'+esc(i.desc)+'</p>'+
+    (i.tags.length?'<div class="icard-tags">'+i.tags.map(t=>'<span class="tag">'+esc(t)+'</span>').join('')+'</div>':'')+
+    '<p class="meta">Создал(а): '+ownerHtml+' · '+n+' '+plural(n,['участник','участника','участников'])+'</p>'+sub+'</div>'+actions+'</header>'+
+    '<div class="tabs2" role="tablist">'+tabs.map(t=>'<button type="button" role="tab" aria-selected="'+(tab===t[0])+'" data-act="tab" data-tab="'+t[0]+'">'+t[1]+'</button>').join('')+'</div>'+
+    '<div>'+tabBody(i,tab)+'</div>';
+}
+function tabBody(i,tab){
+  if(tab==='chat')return chatTab(i);
+  if(tab==='talks')return state.topic?topicView(i):talksList(i);
+  if(tab==='meets')return meetsTab(i);
+  return peopleTab(i);
+}
+function chatTab(i){
+  if(!has(i.members))return '<div class="empty"><p>Общий чат видят и пишут в него только участники интереса.</p><button class="btn primary" type="button" data-act="join-interest" data-id="'+esc(i.id)+'">Вступить в интерес</button></div>';
+  return '<div class="chat"><div class="chat-list" id="chat-list" aria-live="polite" aria-label="Сообщения чата">'+(cache.chat[i.id]||'<p class="meta empty-chat">Загружаем…</p>')+'</div>'+
+    '<form class="chat-form" id="chat-form" novalidate><label class="sr" for="chat-in">Сообщение</label><input type="text" id="chat-in" maxlength="500" autocomplete="off" placeholder="Напишите сообщение и познакомьтесь"><button class="btn primary" type="submit">Отправить</button></form>'+
+    '<p class="hint">Новые сообщения появляются сами, каждые несколько секунд. Будьте вежливы: на грубость можно пожаловаться.</p></div>';
+}
+function talksList(i){
+  const head='<div class="rowhead"><h2>Обсуждения</h2><button class="btn primary sm" type="button" data-act="new-topic">Новая тема</button></div>';
+  const topics=i.topics.filter(t=>!BLOCKED.has(t.a));
+  if(!topics.length)return head+'<div class="empty"><p>Пока нет тем. Начните первое обсуждение.</p></div>';
+  return head+'<div class="topics">'+topics.map(t=>{const c=t.comments.length;return '<button class="topic" type="button" data-act="open-topic" data-id="'+esc(t.id)+'"><b>'+esc(t.title)+'</b><span class="meta">'+esc(who(t.a).name)+' · '+c+' '+plural(c,['ответ','ответа','ответов'])+' · '+esc(ago(t.at))+'</span></button>';}).join('')+'</div>';
+}
+function topicView(i){
+  const t=i.topics.find(x=>x.id===state.topic);
+  if(!t){state.topic=null;return talksList(i);}
+  const own=isMe(t.a),admin=state.status.is_admin;
+  return '<button class="back" type="button" data-act="close-topic">← Все темы</button><h2>'+esc(t.title)+'</h2>'+
+    '<p class="meta" style="margin-top:6px">Начал(а): '+pLink(t.a)+' · '+esc(ago(t.at))+'</p>'+
+    (t.text?'<p class="topic-text">'+esc(t.text)+'</p>':'')+
+    '<div class="subtools">'+((own||admin)?'<button class="lnk danger" type="button" data-act="del-topic" data-id="'+esc(t.id)+'">Удалить тему</button>':'')+(!own?'<button class="lnk" type="button" data-act="report" data-type="topic" data-id="'+esc(t.id)+'">Пожаловаться</button>':'')+'</div>'+
+    '<div class="comments">'+t.comments.filter(c=>!BLOCKED.has(c.a)).map(c=>'<div class="comment">'+avLink(c.a,'md')+'<div><p>'+pLink(c.a)+' <span class="meta">'+esc(ago(c.at))+'</span></p><p>'+esc(c.t)+'</p>'+
+      '<p class="macts" style="display:flex;gap:12px">'+((isMe(c.a)||admin)?'<button class="lnk danger" type="button" data-act="del-comment" data-id="'+esc(c.id)+'">Удалить</button>':'')+(!isMe(c.a)?'<button class="lnk" type="button" data-act="report" data-type="comment" data-id="'+esc(c.id)+'">Пожаловаться</button>':'')+'</p></div></div>').join('')+'</div>'+
+    '<form class="reply" id="reply" novalidate><label class="sr" for="c-text">Ваш ответ</label><textarea id="c-text" placeholder="Напишите ответ" rows="3" maxlength="600"></textarea><button class="btn primary" type="submit">Отправить</button></form>';
+}
+function meetsTab(i){
+  const list=M.filter(m=>m.interestId===i.id).sort((a,b)=>a.when-b.when);
+  const head='<div class="rowhead"><h2>Встречи</h2><button class="btn primary sm" type="button" data-act="new-meetup" data-id="'+esc(i.id)+'">Создать встречу</button></div>';
+  return head+(list.length?'<div class="mlist">'+list.map(cardMeetup).join('')+'</div>':'<div class="empty"><p>Встреч пока нет. Назначьте первую: все участники интереса получат уведомление.</p></div>');
+}
+function peopleTab(i){
+  const head='<div class="rowhead"><h2>Участники</h2></div>';
+  if(!i.members.length)return head+'<div class="empty"><p>Пока никого нет. Станьте первым участником.</p></div>';
+  return head+'<div class="people">'+i.members.map(id=>{const p=who(id);return '<div class="person">'+avLink(id,'md')+'<div>'+pLink(id)+(isMe(id)?' (вы)':'')+'<span class="meta">'+(p.age?ageText(p.age):'')+(p.city?' · '+esc(p.city):'')+'</span></div></div>';}).join('')+'</div>';
+}
+
+/* ---------- встречи ---------- */
+function citiesForFilter(){
+  const s=new Set();
+  M.forEach(m=>{if(m.city)s.add(m.city);});
+  if(state.me&&state.me.city)s.add(state.me.city);
+  return [...s].sort((a,b)=>a.localeCompare(b,'ru'));
+}
+function vMeetups(){
+  const f=state.f;
+  return '<div class="vhead"><h1>Встречи</h1><button class="btn primary" type="button" data-act="new-meetup">Создать встречу</button></div>'+
+    '<form class="filters" id="mf" novalidate>'+
+    fld('Город','f-city','<select id="f-city">'+opts([['','Все города']].concat(citiesForFilter().map(c=>[c,c])),f.city)+'</select>')+
+    fld('Формат','f-format','<select id="f-format">'+opts([['','Любой'],['offline','Офлайн'],['online','Онлайн']],f.format)+'</select>')+
+    fld('Интерес','f-interest','<select id="f-interest">'+opts([['','Все интересы']].concat(I.map(i=>[i.id,i.title])),f.interest)+'</select>')+
+    fld('Ваш возраст','f-age','<input type="number" id="f-age" min="18" max="99" inputmode="numeric" placeholder="Любой" value="'+esc(f.age)+'">')+
+    fld('Ваш пол','f-gender','<select id="f-gender">'+opts([['','Любой'],['f','Женщина'],['m','Мужчина']],f.gender)+'</select>')+
+    '<button class="btn" type="button" data-act="reset-filters">Сбросить</button></form>'+
+    '<p class="hint" style="margin-top:10px">Выбор города показывает встречи в этом городе и все онлайн-встречи. Возраст и пол оставляют только те встречи, куда вас пустят.</p>'+
+    '<div class="fcount"><b id="mcount"></b></div><div class="mlist" id="mlist"></div>';
+}
+function filtered(){
+  const f=state.f,age=parseInt(f.age,10);
+  return M.filter(m=>(!f.city||m.format==='online'||m.city===f.city)&&(!f.format||m.format===f.format)&&(!f.interest||m.interestId===f.interest)&&(!f.gender||m.g==='any'||m.g===f.gender)&&(!age||(age>=m.ageMin&&age<=m.ageMax))).sort((a,b)=>a.when-b.when);
+}
+function fillMeetups(){
+  if(!$('#mlist'))return;
+  const list=filtered();
+  $('#mcount').textContent='Найдено: '+list.length+' '+plural(list.length,['встреча','встречи','встреч']);
+  $('#mlist').innerHTML=list.length?list.map(cardMeetup).join(''):
+    '<div class="empty"><p>По этим условиям встреч нет.</p><p class="meta">Измените фильтры или назначьте свою встречу.</p><div class="row"><button class="btn" type="button" data-act="reset-filters">Сбросить фильтры</button><button class="btn primary" type="button" data-act="new-meetup">Создать встречу</button></div></div>';
+}
+
+/* ---------- сообщения ---------- */
+function vMessages(){
+  const sug=recoPeople().filter(x=>canDM(x.p.id)).slice(0,6);
+  return '<div class="vhead"><h1>Сообщения</h1></div><div id="convos">'+(CONVOS?convosHtml():'<p class="meta">Загружаем…</p>')+'</div>'+
+    '<p class="hint" style="margin:14px 0 0">Написать можно человеку, с которым у вас есть общий интерес. Вступайте в интересы, чтобы знакомиться.</p>'+
+    (sug.length?'<section class="section"><h2 style="margin-bottom:14px">С кем можно познакомиться</h2><div class="reco">'+sug.map(x=>personCard(x.p,x.common)).join('')+'</div></section>':'');
+}
+async function loadConvos(){
+  const r=await sb.from('direct_messages').select('id,sender_id,recipient_id,body,created_at,read_at').order('created_at',{ascending:false}).limit(300);
+  if(r.error){const b=$('#convos');if(b)b.innerHTML='<p class="err">'+esc(errText(r.error))+'</p>';return;}
+  const me=state.me.id,map=new Map();
+  r.data.forEach(m=>{
+    const o=m.sender_id===me?m.recipient_id:m.sender_id;
+    if(BLOCKED.has(o))return;
+    let c=map.get(o);
+    if(!c){c={other:o,last:m,unread:0};map.set(o,c);}
+    if(m.recipient_id===me&&!m.read_at)c.unread++;
+  });
+  CONVOS=[...map.values()];
+  await ensurePeople(CONVOS.map(c=>c.other));
+  const box=$('#convos');if(!box||state.view!=='messages')return;
+  box.innerHTML=convosHtml();
+}
+function convosHtml(){
+  const me=state.me.id;
+  return CONVOS.length?'<div class="convos">'+CONVOS.map(c=>{const p=who(c.other);return '<a class="convo'+(c.unread?' unread':'')+'" href="#messages-'+esc(c.other)+'">'+av(p,'md')+'<div><b>'+esc(p.name)+'</b><span class="snip">'+(c.last.sender_id===me?'Вы: ':'')+esc(c.last.body)+'</span></div><span class="meta">'+esc(ago(c.last.created_at))+'</span>'+(c.unread?'<span class="count">'+c.unread+'</span>':'')+'</a>';}).join('')+'</div>':'<div class="empty"><p>Личных сообщений пока нет.</p><a class="btn primary" href="#interests">Найти интерес и знакомых</a></div>';
+}
+function vThread(){
+  const id=state.arg;
+  if(!UUID.test(id||'')||!PEOPLE[id]||id===state.me.id)return '<div class="empty"><p>Такого собеседника нет.</p><a class="btn" href="#messages">К сообщениям</a></div>';
+  const p=PEOPLE[id];
+  const can=canDM(id);
+  const why=BLOCKED.has(id)?'Вы заблокировали этого человека. Разблокировать можно в его профиле.':'Писать можно только тем, с кем у вас есть общий интерес. Вступите в один из его интересов.';
+  return '<a class="back" href="#messages">← Все диалоги</a><div class="thread-head">'+avLink(id,'md')+'<div class="who">'+pLink(id)+'<span class="meta">'+ageText(p.age)+' · '+esc(p.city)+'</span></div></div>'+
+    '<div class="dm-list" id="dm-list" aria-live="polite">'+(cache.dm[id]||'<p class="meta empty-chat">Загружаем…</p>')+'</div>'+
+    (can?'<form class="chat-form" id="dm-form" novalidate style="margin-top:12px"><label class="sr" for="dm-in">Сообщение</label><input type="text" id="dm-in" maxlength="1000" autocomplete="off" placeholder="Напишите сообщение"><button class="btn primary" type="submit">Отправить</button></form>'
+      :'<div class="notice" style="margin-top:12px"><p>'+why+'</p></div>');
+}
+async function openThread(id){
+  if(!UUID.test(id||'')||!PEOPLE[id])return;
+  live.threadId=id;live.threadSig='';
+  await pollThread(true);
+}
+async function pollThread(force){
+  const o=live.threadId,me=state.me&&state.me.id;
+  if(!o||!me||!$('#dm-list'))return;
+  const r=await sb.from('direct_messages').select('id,sender_id,recipient_id,body,created_at,read_at')
+    .or('and(sender_id.eq.'+me+',recipient_id.eq.'+o+'),and(sender_id.eq.'+o+',recipient_id.eq.'+me+')')
+    .order('created_at',{ascending:false}).limit(100);
+  if(r.error||o!==live.threadId||!$('#dm-list'))return;
+  const msgs=r.data.slice().reverse();
+  const sig=msgs.map(m=>m.id+(m.read_at?'r':'')).join(',');
+  if(msgs.some(m=>m.recipient_id===me&&!m.read_at)){
+    if(CONVOS){const c=CONVOS.find(x=>x.other===o);if(c)c.unread=0;}
+    sb.from('direct_messages').update({read_at:new Date().toISOString()}).eq('recipient_id',me).eq('sender_id',o).is('read_at',null).then(()=>refreshCounts());
+  }
+  if(sig===live.threadSig&&!force)return;
+  live.threadSig=sig;
+  msgs.forEach(m=>{MSG[m.id]={text:m.body,author:m.sender_id};});
+  const box=$('#dm-list');const near=box.scrollHeight-box.scrollTop-box.clientHeight<80;
+  box.innerHTML=msgs.length?msgs.map(m=>{
+    const mine=m.sender_id===me;
+    return '<div class="dm'+(mine?' mine':'')+'"><div class="bub">'+esc(m.body)+'</div><div class="meta"><span>'+esc(clock(m.created_at))+(mine&&m.read_at?' · прочитано':'')+'</span>'+
+      (mine?'<button class="lnk danger" type="button" data-act="del-dm" data-id="'+esc(m.id)+'">Удалить</button>':'<button class="lnk" type="button" data-act="report" data-type="dm" data-id="'+esc(m.id)+'">Пожаловаться</button>')+'</div></div>';
+  }).join(''):'<p class="meta empty-chat">Сообщений пока нет. Поздоровайтесь.</p>';
+  cache.dm[o]=box.innerHTML;
+  if(near||force)box.scrollTop=box.scrollHeight;
+}
+
+/* ---------- чат интереса ---------- */
+async function openChat(id){live.chatId=id;live.chatSig='';await pollChat(true);}
+async function pollChat(force){
+  const id=live.chatId;
+  if(!id||!$('#chat-list'))return;
+  const r=await sb.from('chat_messages').select('id,author_id,body,created_at').eq('interest_id',id).order('created_at',{ascending:false}).limit(100);
+  if(r.error||id!==live.chatId||!$('#chat-list'))return;
+  const msgs=r.data.slice().reverse();
+  await ensurePeople(msgs.map(m=>m.author_id));
+  if(id!==live.chatId||!$('#chat-list'))return;
+  const vis=msgs.filter(m=>!BLOCKED.has(m.author_id));
+  const sig=vis.map(m=>m.id).join(',');
+  if(sig===live.chatSig&&!force)return;
+  live.chatSig=sig;
+  vis.forEach(m=>{MSG[m.id]={text:m.body,author:m.author_id};});
+  const box=$('#chat-list');const near=box.scrollHeight-box.scrollTop-box.clientHeight<80;
+  box.innerHTML=vis.length?vis.map(m=>{
+    const mine=isMe(m.author_id);
+    return '<div class="msg'+(mine?' mine':'')+'">'+avLink(m.author_id,'sm')+'<div class="bub"><p class="mh">'+pLink(m.author_id)+'<span class="meta">'+esc(ago(m.created_at))+'</span></p><p class="mt">'+esc(m.body)+'</p>'+
+      '<p class="macts">'+((mine||state.status.is_admin)?'<button class="lnk danger" type="button" data-act="del-chat" data-id="'+esc(m.id)+'">Удалить</button>':'')+(!mine?'<button class="lnk" type="button" data-act="report" data-type="chat" data-id="'+esc(m.id)+'">Пожаловаться</button>':'')+'</p></div></div>';
+  }).join(''):'<p class="meta empty-chat">Пока тишина. Напишите первое сообщение.</p>';
+  cache.chat[id]=box.innerHTML;
+  if(near||force)box.scrollTop=box.scrollHeight;
+}
+
+/* ---------- человек ---------- */
+function vUser(){
+  const id=state.arg;
+  if(!UUID.test(id||'')||!PEOPLE[id])return '<div class="empty"><p>Такого человека нет.</p><a class="btn" href="#interests">К интересам</a></div>';
+  if(id===state.me.id)return vProfile();
+  const p=PEOPLE[id],common=commonWith(id);
+  const their=I.filter(i=>i.members.includes(id));
+  const going=M.filter(m=>m.going.includes(id)).sort((a,b)=>a.when-b.when).slice(0,3);
+  const blocked=BLOCKED.has(id);
+  return '<a class="back" href="javascript:history.back()" data-act="back">← Назад</a>'+
+    '<div class="upage">'+av(p,'lg')+'<div><h1>'+esc(p.name)+'</h1><p class="meta">'+ageText(p.age)+' · '+esc(p.city)+' · '+(p.g==='f'?'женщина':'мужчина')+'</p>'+
+    (p.about?'<p class="about">'+esc(p.about)+'</p>':'')+
+    '<div class="row">'+(canDM(id)?'<a class="btn primary" href="#messages-'+esc(id)+'">Написать</a>':(!blocked?'<span class="meta">Написать можно, когда появится общий интерес.</span>':''))+
+    (blocked?'<button class="btn" type="button" data-act="unblock" data-id="'+esc(id)+'">Разблокировать</button>':'<button class="btn" type="button" data-act="block" data-id="'+esc(id)+'">Заблокировать</button>')+
+    '<button class="btn" type="button" data-act="report" data-type="user" data-id="'+esc(id)+'">Пожаловаться</button></div>'+
+    (state.status.is_admin?'<div class="row"><button class="btn warn sm" type="button" data-act="adm-ban" data-id="'+esc(id)+'">Ограничить</button><button class="btn sm" type="button" data-act="adm-unban" data-id="'+esc(id)+'">Снять ограничение</button></div>':'')+'</div></div>'+
+    (common.length?'<section><h2 style="margin-bottom:12px">Общие интересы</h2><div class="chips">'+common.map(i=>'<a class="chip tint" style="--h:'+esc(i.hue)+';font-size:.95rem;padding:.35em .9em" href="#interest-'+esc(i.id)+'">'+esc(i.title)+'</a>').join('')+'</div></section>':'')+
+    '<section class="section"><h2 style="margin-bottom:12px">Интересы</h2>'+(their.length?'<div class="chips">'+their.map(i=>'<a class="chip tint" style="--h:'+esc(i.hue)+';font-size:.95rem;padding:.35em .9em" href="#interest-'+esc(i.id)+'">'+esc(i.title)+'</a>').join('')+'</div>':'<p class="meta">Пока ни в каком.</p>')+'</section>'+
+    (going.length?'<section class="section"><h2 style="margin-bottom:12px">Идёт на встречи</h2><div class="mlist">'+going.map(cardMeetup).join('')+'</div></section>':'');
+}
+
+/* ---------- уведомления ---------- */
+function vNotes(){
+  return '<div class="vhead"><h1>Уведомления</h1><button class="btn sm" type="button" data-act="read-all">Отметить все прочитанными</button></div><div id="notes"></div>'+
+    '<p class="hint" style="margin-top:14px">Уведомления о новых встречах можно выключить внутри каждого интереса. Письма и сообщения в мессенджеры пока не отправляются: уведомления видны здесь, на сайте.</p>';
+}
+function fillNotes(){
+  const box=$('#notes');if(!box)return;
+  box.innerHTML=NOTES.length?'<div class="notes">'+NOTES.map(n=>'<button class="note '+(n.read_at?'read':'unread')+'" type="button" data-act="open-note" data-id="'+esc(n.id)+'"><span class="dotu"></span><div><b>'+esc(n.title)+'</b><span>'+esc(n.body)+'</span><span class="meta">'+esc(ago(n.created_at))+'</span></div></button>').join('')+'</div>':'<div class="empty"><p>Пока ничего нового. Когда в ваших интересах появятся встречи, мы сообщим здесь.</p></div>';
+}
+async function loadNotes(){
+  const r=await sb.from('notifications').select('id,kind,title,body,link,read_at,created_at').order('created_at',{ascending:false}).limit(40);
+  if(!r.error){NOTES=r.data;state.unreadN=NOTES.filter(n=>!n.read_at).length;renderTop();}
+  if(state.view==='notifications')fillNotes();
+}
+
+/* ---------- профиль ---------- */
+function photoPick(){
+  return '<div class="photo-pick"><span id="photo-prev">'+av({name:'?',hue:190,photo:state.photoUrl},'lg')+'</span><label class="btn pickbtn">Выбрать фото<input class="sr" type="file" id="photo" accept="image/*"></label></div>';
+}
+function vAuth(){
+  const su=state.authMode==='signup';
+  const tabs='<div class="tabs2" role="tablist"><button type="button" role="tab" aria-selected="'+su+'" data-act="auth-mode" data-mode="signup">Регистрация</button><button type="button" role="tab" aria-selected="'+(!su)+'" data-act="auth-mode" data-mode="login">Вход</button></div>';
+  const notice=state.notice?'<div class="notice" role="status"><p>'+esc(state.notice)+'</p></div>':'';
+  if(!su){
+    return '<div class="vhead"><h1>Вход</h1></div>'+tabs+notice+
+      '<form class="form" id="login" novalidate>'+fld('Почта','li-email','<input type="email" id="li-email" autocomplete="email">')+fld('Пароль','li-pw','<input type="password" id="li-pw" autocomplete="current-password">')+
+      '<p class="err" id="err" role="alert"></p><div><button class="btn primary" type="submit" id="submit-btn">Войти</button></div></form>';
+  }
+  return '<div class="vhead"><h1>Регистрация</h1></div>'+tabs+notice+
+    '<form class="form" id="signup" novalidate>'+photoPick()+
+    fld('Почта','su-email','<input type="email" id="su-email" autocomplete="email" placeholder="name@example.com">')+
+    fld('Пароль','su-pw','<input type="password" id="su-pw" autocomplete="new-password" minlength="6" placeholder="Не меньше 6 символов">')+
+    fld('Имя','su-name','<input type="text" id="su-name" maxlength="40" autocomplete="given-name" placeholder="Например, Анна">')+
+    '<div class="two">'+fld('Возраст','su-age','<input type="number" id="su-age" min="18" max="99" inputmode="numeric" placeholder="25">')+cityField('su-city','Город','','Начните вводить')+'</div>'+
+    '<p class="hint" style="margin-top:-8px">Выберите город из подсказок. Если его нет в списке, впишите название целиком, и он добавится.</p>'+
+    '<div class="field"><span class="lbl" id="sg-l">Пол</span><div class="segs" role="radiogroup" aria-labelledby="sg-l"><label class="seg"><input type="radio" name="sg" value="f"><span>Женщина</span></label><label class="seg"><input type="radio" name="sg" value="m"><span>Мужчина</span></label></div></div>'+
+    fld('О себе','su-about','<textarea id="su-about" maxlength="300" placeholder="Пара слов о том, чем вы любите заниматься"></textarea>')+
+    '<div class="check"><input type="checkbox" id="su-consent"><label for="su-consent">Я согласен(на) на обработку моих данных для работы сайта. Мне есть 18 лет.</label></div>'+
+    '<details class="more"><summary>Какие данные мы храним</summary><p>Почту, имя, возраст, город, пол, текст «О себе» и фото, если вы его загрузили. Имя, возраст, город, пол, «О себе» и фото видят другие зарегистрированные пользователи. Почту и пароль не видит никто, кроме вас. Данные хранятся в облачном сервисе Supabase на серверах в Европе. Это тестовая версия. Профиль и все ваши данные можно удалить в любой момент на странице «Профиль».</p></details>'+
+    '<p class="err" id="err" role="alert"></p><div><button class="btn primary" type="submit" id="submit-btn">Создать профиль</button></div></form>';
+}
+function vProfile(){
+  const me=state.me;
+  if(!me)return vNoProfile();
+  const mine=I.filter(i=>has(i.members));
+  const mymeets=M.filter(m=>has(m.going)).sort((a,b)=>a.when-b.when);
+  const blocked=[...BLOCKED].filter(id=>PEOPLE[id]);
+  return '<div class="pro"><span id="avatar-box">'+av(me,'lg')+'</span><div><h1>'+esc(me.name)+'</h1><p class="meta">'+ageText(me.age)+' · '+esc(me.city)+' · '+(me.g==='f'?'женщина':'мужчина')+'</p>'+
+    (me.about?'<p style="max-width:60ch;white-space:pre-wrap;overflow-wrap:anywhere">'+esc(me.about)+'</p>':'')+
+    '<div class="row" style="margin-top:6px"><button class="btn sm" type="button" data-act="edit-profile">Редактировать</button><label class="btn sm pickbtn">Сменить фото<input class="sr" type="file" id="photo-change" accept="image/*"></label>'+
+    (state.status.is_admin?'<a class="btn sm" href="#admin">Модерация'+(state.openReports?'<span class="count">'+state.openReports+'</span>':'')+'</a>':'')+'</div></div></div>'+
+    '<section><h2 style="margin-bottom:14px">Мои интересы</h2>'+(mine.length?'<div class="chips">'+mine.map(i=>'<a class="chip tint" style="--h:'+esc(i.hue)+';font-size:.95rem;padding:.35em .9em" href="#interest-'+esc(i.id)+'">'+esc(i.title)+'</a>').join('')+'</div>':'<div class="empty"><p>Вы пока не вступили ни в один интерес.</p><a class="btn primary" href="#interests">Найти интерес</a></div>')+'</section>'+
+    '<section class="section"><h2 style="margin-bottom:14px">Мои встречи</h2>'+(mymeets.length?'<div class="mlist">'+mymeets.map(cardMeetup).join('')+'</div>':'<div class="empty"><p>Вы пока никуда не записаны.</p><a class="btn primary" href="#meetups">Найти встречу</a></div>')+'</section>'+
+    (blocked.length?'<section class="section"><h2 style="margin-bottom:14px">Заблокированные</h2><div class="blist">'+blocked.map(id=>'<div class="brow"><span>'+esc(who(id).name)+'</span><button class="btn sm" type="button" data-act="unblock" data-id="'+esc(id)+'">Разблокировать</button></div>').join('')+'</div></section>':'')+
+    '<section class="section"><div class="row"><button class="btn warn" type="button" data-act="logout">Выйти</button><button class="btn warn" type="button" data-act="del-account">Удалить профиль</button></div></section>';
+}
+
+/* ---------- модерация ---------- */
+function vAdmin(){
+  if(!state.status.is_admin)return '<div class="empty"><p>Эта страница только для администратора.</p><a class="btn" href="#home">На главную</a></div>';
+  const t=state.adminTab;
+  const tabs=[['reports','Жалобы'+(state.openReports?' ('+state.openReports+')':'')],['people','Люди'],['cities','Новые города']];
+  return '<div class="vhead"><h1>Модерация</h1></div><div class="tabs2" role="tablist">'+tabs.map(x=>'<button type="button" role="tab" aria-selected="'+(t===x[0])+'" data-act="admin-tab" data-tab="'+x[0]+'">'+x[1]+'</button>').join('')+'</div><div id="admin-body"><p class="meta">Загружаем…</p></div>';
+}
+async function loadAdmin(){
+  if(!state.status.is_admin)return;
+  const [rep,ban,cit]=await Promise.all([
+    sb.from('reports').select('id,reporter_id,target_type,target_id,target_user_id,reason,details,snapshot,status,created_at').order('created_at',{ascending:false}).limit(100),
+    sb.rpc('admin_banned_users'),
+    sb.from('cities').select('id,label,created_at').eq('user_added',true).order('created_at',{ascending:false}).limit(200)
+  ]);
+  ADMIN.reports=rep.error?[]:rep.data;
+  ADMIN.banned=new Set((ban.error?[]:ban.data).map(r=>r.id));
+  ADMIN.cities=cit.error?[]:cit.data;
+  ADMIN.loaded=true;
+  await ensurePeople(ADMIN.reports.flatMap(r=>[r.reporter_id,r.target_user_id]));
+  state.openReports=ADMIN.reports.filter(r=>r.status==='open').length;
+  renderTop();
+  fillAdmin();
+}
+function fillAdmin(){
+  const box=$('#admin-body');if(!box||state.view!=='admin')return;
+  const t=state.adminTab;
+  if(t==='reports'){
+    const open=ADMIN.reports.filter(r=>r.status==='open'),done=ADMIN.reports.filter(r=>r.status!=='open').slice(0,15);
+    const card=r=>{
+      const delTypes=['topic','comment','chat','interest','meetup'];
+      return '<article class="rep"><div class="row"><b>'+esc(TARGETS[r.target_type]||r.target_type)+'</b><span class="chip plain">'+esc(REASONS[r.reason]||r.reason)+'</span><span class="meta">'+esc(ago(r.created_at))+'</span></div>'+
+        '<p class="meta">От: '+(r.reporter_id&&PEOPLE[r.reporter_id]?pLink(r.reporter_id):'удалён')+' · На: '+(r.target_user_id&&PEOPLE[r.target_user_id]?pLink(r.target_user_id)+(ADMIN.banned.has(r.target_user_id)?' (ограничен)':''):'неизвестно')+'</p>'+
+        (r.snapshot?'<p class="snip">'+esc(r.snapshot)+'</p>':'')+(r.details?'<p class="meta">Комментарий: '+esc(r.details)+'</p>':'')+
+        (r.status==='open'?'<div class="row">'+(delTypes.includes(r.target_type)?'<button class="btn sm warn" type="button" data-act="adm-del" data-id="'+esc(r.id)+'">Удалить содержимое</button>':'')+
+          (r.target_user_id&&!ADMIN.banned.has(r.target_user_id)?'<button class="btn sm warn" type="button" data-act="adm-ban" data-id="'+esc(r.target_user_id)+'" data-report="'+esc(r.id)+'">Ограничить человека</button>':'')+
+          '<button class="btn sm" type="button" data-act="adm-done" data-id="'+esc(r.id)+'">Готово</button><button class="btn sm" type="button" data-act="adm-dismiss" data-id="'+esc(r.id)+'">Отклонить</button></div>':'<p class="meta">'+(r.status==='done'?'Обработана':'Отклонена')+'</p>')+'</article>';
+    };
+    box.innerHTML='<div class="reps">'+(open.length?open.map(card).join(''):'<div class="empty"><p>Новых жалоб нет.</p></div>')+(done.length?'<h2 style="margin-top:14px">Недавно обработанные</h2>'+done.map(card).join(''):'')+'</div>';
+  }else if(t==='people'){
+    const ppl=Object.values(PEOPLE).sort((a,b)=>a.name.localeCompare(b.name,'ru'));
+    box.innerHTML='<div class="reps">'+ppl.map(p=>'<div class="rowline"><span>'+pLink(p.id)+' <span class="meta">'+ageText(p.age)+' · '+esc(p.city)+'</span>'+(ADMIN.banned.has(p.id)?' <span class="chip plain">ограничен</span>':'')+'</span>'+
+      (p.id===state.me.id?'':(ADMIN.banned.has(p.id)?'<button class="btn sm" type="button" data-act="adm-unban" data-id="'+esc(p.id)+'">Снять ограничение</button>':'<button class="btn sm warn" type="button" data-act="adm-ban" data-id="'+esc(p.id)+'">Ограничить</button>'))+'</div>').join('')+'</div>';
+  }else{
+    box.innerHTML='<p class="hint" style="margin-bottom:12px">Города, которые люди добавили сами. Если название лишнее или с ошибкой, удалите его: в профилях оно останется, но в подсказках больше не появится.</p><div class="reps">'+(ADMIN.cities.length?ADMIN.cities.map(c=>'<div class="rowline"><span>'+esc(c.label)+'</span><button class="btn sm warn" type="button" data-act="adm-city-del" data-id="'+esc(c.id)+'">Удалить</button></div>').join(''):'<div class="empty"><p>Добавленных людьми городов пока нет.</p></div>')+'</div>';
+  }
+}
+
+/* ---------- отрисовка ---------- */
+function renderTop(){
+  const cur=state.view==='interest'?'interests':(state.view==='thread'?'messages':state.view);
+  const items=[['home','Главная'],['interests','Интересы'],['meetups','Встречи'],['messages','Сообщения'],['profile','Профиль']];
+  $('#nav').innerHTML=items.map(it=>'<a href="#'+it[0]+'"'+(it[0]===cur?' aria-current="page"':'')+'>'+it[1]+(it[0]==='messages'&&state.unreadDM?'<span class="count">'+state.unreadDM+'</span>':'')+'</a>').join('');
+  if(state.session&&state.me){
+    $('#acct').innerHTML='<a class="bell" href="#notifications" aria-label="Уведомления'+(state.unreadN?': '+state.unreadN+' новых':'')+'"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.9 1.9 0 0 0 3.4 0"/></svg>'+(state.unreadN?'<span class="count">'+(state.unreadN>99?'99+':state.unreadN)+'</span>':'')+'</a>'+
+      '<a class="me" href="#profile">'+av(state.me,'sm')+'<span class="nm">'+esc(state.me.name.split(' ')[0])+'</span></a>';
+  }else $('#acct').innerHTML='<a class="btn primary sm" href="#profile">Войти</a>';
+}
+function render(){
+  renderTop();
+  const v=state.view;
+  let html;
+  const ready=state.session&&state.loaded&&state.me;
+  if(!SB_OK)html=vSetup();
+  else if(v==='home')html=vHome();
+  else if(v==='profile'&&!state.session)html=vAuth();
+  else if(!state.session)html=vGate(v);
+  else if(!state.loaded)html=state.loadError?vLoadError():vLoading();
+  else if(!state.me)html=vNoProfile();
+  else html=({interests:vInterests,interest:vInterest,meetups:vMeetups,messages:vMessages,thread:vThread,user:vUser,notifications:vNotes,profile:vProfile,admin:vAdmin}[v]||vHome)();
+  $('#view').innerHTML=(ready&&state.status.banned?bannedBanner():'')+html;
+  afterRender();
+}
+function afterRender(){
+  const v=state.view;
+  if(v==='interests')fillInterests();
+  if(v==='meetups')fillMeetups();
+  if(!state.session||!state.loaded||!state.me){live.chatId=null;live.threadId=null;return;}
+  if(v==='interest'){const i=interest(state.arg);if(i&&curTab(i)==='chat'&&has(i.members))openChat(i.id);else live.chatId=null;}else live.chatId=null;
+  if(v==='thread')openThread(state.arg);else live.threadId=null;
+  if(v==='messages')loadConvos();
+  if(v==='notifications'){fillNotes();loadNotes();}
+  if(v==='admin'){if(ADMIN.loaded)fillAdmin();loadAdmin();}
+}
+const KEEP=/^(q|f-age|chat-in|dm-in|c-text)$/;
+function renderKeep(){
+  const a=document.activeElement,id=a&&a.id;
+  const s=a&&a.selectionStart,e=a&&a.selectionEnd;
+  const saved={};
+  document.querySelectorAll('#view input[id],#view textarea[id]').forEach(n=>{if(KEEP.test(n.id)&&n.value)saved[n.id]=n.value;});
+  render();
+  Object.keys(saved).forEach(k=>{const n=document.getElementById(k);if(n&&!n.value)n.value=saved[k];});
+  if(id&&KEEP.test(id)){const n=document.getElementById(id);if(n){n.focus();try{n.setSelectionRange(s,e);}catch(x){}}}
+}
+let lastKey=null;
+async function route(){
+  const h=(location.hash||'#home').slice(1);
+  let v='home',arg=null,m;
+  if((m=h.match(/^interest-(.+)$/))){v='interest';arg=m[1];}
+  else if((m=h.match(/^user-(.+)$/))){v='user';arg=m[1];}
+  else if((m=h.match(/^messages-(.+)$/))){v='thread';arg=m[1];}
+  else if(['home','interests','meetups','messages','notifications','profile','admin'].indexOf(h)>=0)v=h;
+  const key=v+':'+arg;
+  if(key!==lastKey){state.tab=state.pendingTab||null;state.pendingTab=null;state.topic=null;lastKey=key;live.chatId=null;live.threadId=null;}
+  state.view=v;state.arg=arg;
+  if(v!=='home'&&v!=='profile'&&!state.session)state.after=h;
+  closeModal();
+  render();
+  window.scrollTo(0,0);
+  if(SB_OK&&state.session)await refresh();
+}
+async function refresh(){
+  try{await reload();state.loadError='';}catch(e){state.loadError=errText(e);}
+  renderKeep();
+  refreshCounts();
+}
+function go(h){if(location.hash==='#'+h)route();else location.hash=h;}
+
+/* ---------- уведомления на экране и окна ---------- */
+let tt=null;
+function toast(msg){const t=$('#toast');t.textContent=msg;t.classList.add('show');clearTimeout(tt);tt=setTimeout(()=>t.classList.remove('show'),3800);}
+let modalOpener=null;
+function openModal(title,html){modalOpener=document.activeElement;$('#mt').textContent=title;$('#mb').innerHTML=html;$('#ov').hidden=false;const f=$('#mb input[type=text],#mb select,#mb textarea,#mb button.primary');if(f)f.focus();}
+function closeModal(){if($('#ov').hidden)return;$('#ov').hidden=true;$('#mb').innerHTML='';confirmCb=null;if(modalOpener&&modalOpener.isConnected)try{modalOpener.focus();}catch(e){}}
+const setErr=t=>{const e=$('#err');if(e)e.textContent=t;};
+function needUser(){
+  if(state.session&&state.me)return false;
+  state.after=location.hash.slice(1)||'home';
+  toast('Сначала зарегистрируйтесь или войдите.');
+  go('profile');
+  return true;
+}
+let busy=false;
+async function run(fn){
+  if(busy)return;
+  busy=true;
+  try{await fn();}catch(e){toast(errText(e));}
+  finally{busy=false;}
+}
+async function submitting(fn){
+  if(busy)return;
+  const b=$('#submit-btn')||$('#mb button[type=submit]'),old=b&&b.textContent;
+  busy=true;if(b){b.disabled=true;b.textContent='Подождите…';}
+  try{await fn();}catch(e){setErr(errText(e));}
+  finally{busy=false;if(b&&b.isConnected){b.disabled=false;b.textContent=old;}}
+}
+async function afterChange(){await reload();render();refreshCounts();}
+let confirmCb=null;
+function confirmModal(title,text,okText,cb,danger){
+  confirmCb=cb;
+  openModal(title,'<p>'+esc(text)+'</p><div class="row" style="margin-top:14px"><button class="btn'+(danger?' warn':' primary')+'" type="button" data-act="confirm-ok">'+esc(okText)+'</button><button class="btn" type="button" data-act="close">Отмена</button></div>');
+}
+
+/* ---------- подсказки городов ---------- */
+let comboTimer=null,comboSeq=0;
+function hideCombo(inp){
+  const l=document.getElementById(inp.dataset.list);
+  if(l){l.hidden=true;l.innerHTML='';}
+  inp.setAttribute('aria-expanded','false');inp.removeAttribute('aria-activedescendant');
+}
+async function suggestCities(inp){
+  const q=inp.value.trim();
+  const list=document.getElementById(inp.dataset.list);
+  if(!list||!SB_OK)return;
+  if(q.length<1){hideCombo(inp);return;}
+  const seq=++comboSeq;
+  let rows=[];
+  try{const r=await sb.rpc('search_cities',{q});if(r.error)throw r.error;rows=r.data||[];}catch(e){rows=[];}
+  if(seq!==comboSeq||document.activeElement!==inp)return;
+  const k=cityKey(q);
+  const exact=rows.some(r=>cityKey(r.label)===k);
+  let html=rows.map((r,n)=>'<li role="option" id="'+inp.id+'-o'+n+'" data-label="'+esc(r.label)+'"><span>'+esc(r.label)+'</span><span class="r">'+esc(r.region||'')+'</span></li>').join('');
+  if(!exact&&q.length>=2)html+='<li role="option" class="new" id="'+inp.id+'-o'+rows.length+'" data-label="'+esc(q)+'">Добавить «'+esc(q)+'» как новый город</li>';
+  list.innerHTML=html;list.hidden=!html;
+  inp.setAttribute('aria-expanded',html?'true':'false');
+}
+function pickCity(li){
+  const list=li.parentElement,inp=document.querySelector('[data-list="'+list.id+'"]');
+  if(!inp)return;
+  inp.value=li.dataset.label;
+  hideCombo(inp);
+}
+function moveCombo(inp,dir){
+  const list=document.getElementById(inp.dataset.list);if(!list||list.hidden)return false;
+  const items=[...list.querySelectorAll('li')];if(!items.length)return false;
+  let k=items.findIndex(li=>li.getAttribute('aria-selected')==='true');
+  if(k>=0)items[k].setAttribute('aria-selected','false');
+  k=(k+dir+items.length)%items.length;
+  items[k].setAttribute('aria-selected','true');inp.setAttribute('aria-activedescendant',items[k].id);
+  items[k].scrollIntoView({block:'nearest'});
+  return true;
+}
+
+/* ---------- действия ---------- */
+async function toggleInterest(id){
+  if(needUser())return;
+  const i=interest(id),uid=state.me.id;
+  if(has(i.members)){
+    const r=await sb.from('interest_members').delete().eq('interest_id',id).eq('user_id',uid);
+    if(r.error)throw r.error;
+    toast('Вы вышли из «'+i.title+'»');
+  }else{
+    const r=await sb.from('interest_members').insert({interest_id:id,user_id:uid});
+    if(r.error)throw r.error;
+    toast('Вы вступили в «'+i.title+'»');
+  }
+  await afterChange();
+}
+function eligibility(m){
+  const me=state.me;
+  if(me.age<m.ageMin||me.age>m.ageMax)return 'Эта встреча для возраста '+m.ageMin+'–'+m.ageMax+'.';
+  if(m.g!=='any'&&m.g!==me.g)return m.g==='f'?'Эта встреча только для женщин.':'Эта встреча только для мужчин.';
+  return '';
+}
+async function toggleMeetup(id){
+  if(needUser())return;
+  const m=M.find(x=>x.id===id);
+  if(has(m.going)){
+    const r=await sb.from('meetup_going').delete().eq('meetup_id',id).eq('user_id',state.me.id);
+    if(r.error)throw r.error;
+    toast('Вы отказались от встречи.');
+  }else{
+    const why=eligibility(m);if(why){toast(why);return;}
+    if(m.going.length>=m.max){toast('Мест больше нет.');return;}
+    const r=await sb.rpc('join_meetup',{p_meetup:id});
+    if(r.error)throw r.error;
+    toast('Вы записались: '+m.title);
+  }
+  await afterChange();
+}
+async function logout(){
+  await sb.auth.signOut({scope:'local'});
+  state.session=null;clearData();state.notice='';
+  toast('Вы вышли из аккаунта.');
+  go('home');
+}
+async function removeRow(table,id,okMsg){
+  const r=await sb.from(table).delete().eq('id',id);
+  if(r.error)throw r.error;
+  toast(okMsg);
+}
+
+/* ---------- окна с формами ---------- */
+function tagsFrom(s){
+  const seen=new Set(),out=[];
+  String(s||'').split(/[,;\n]/).forEach(x=>{const t=x.replace(/^#+/,'').trim().slice(0,24);const k=t.toLowerCase();if(t&&!seen.has(k)){seen.add(k);out.push(t);}});
+  return out.slice(0,5);
+}
+function openInterestForm(i,prefill){
+  if(needUser())return;
+  const e=!!i;
+  openModal(e?'Редактировать интерес':'Новый интерес',
+    '<form id="f-ni" data-id="'+esc(e?i.id:'')+'" novalidate>'+
+    fld('Название','ni-title','<input type="text" id="ni-title" maxlength="40" placeholder="Например, Скалолазание" value="'+esc(e?i.title:(prefill||''))+'" autocomplete="off">')+
+    '<div class="similar" id="ni-sim" hidden></div>'+
+    fld('Описание','ni-desc','<textarea id="ni-desc" maxlength="200" placeholder="Чем вы занимаетесь и кого ждёте">'+esc(e?i.desc:'')+'</textarea>')+
+    fld('Категория','ni-cat','<select id="ni-cat">'+opts(Object.entries(CATS),e?i.cat:'other')+'</select>')+
+    '<div class="field"><span class="lbl">Формат</span>'+segs('nfmt',[['offline','Офлайн'],['online','Онлайн'],['both','Оба']],e?i.format:'both','Формат')+'</div>'+
+    '<div id="ni-cityw">'+cityField('ni-city','Город (по желанию)',e?i.city:'','Если интерес привязан к городу')+'</div>'+
+    fld('Теги (до 5, через запятую)','ni-tags','<input type="text" id="ni-tags" maxlength="120" placeholder="например: новички, выходные, горы" value="'+esc(e?i.tags.join(', '):'')+'">')+
+    '<div class="field"><span class="lbl">Цвет</span>'+swatches(e?i.hue:null)+'</div>'+
+    '<p class="err" id="err" role="alert"></p><button class="btn primary" type="submit">'+(e?'Сохранить':'Создать интерес')+'</button></form>');
+  if(!e)showSimilar();
+  syncCityVisibility();
+}
+function syncCityVisibility(){
+  const w=$('#ni-cityw');if(!w)return;
+  const f=document.querySelector('input[name=nfmt]:checked');
+  w.hidden=!!(f&&f.value==='online');
+}
+function showSimilar(){
+  const box=$('#ni-sim'),inp=$('#ni-title');if(!box||!inp||$('#f-ni').dataset.id)return;
+  const k=cityKey(inp.value);
+  if(k.length<2){box.hidden=true;return;}
+  const sim=I.filter(i=>{const t=cityKey(i.title);return t===k||t.includes(k)||k.includes(t);}).slice(0,4);
+  box.hidden=!sim.length;
+  box.innerHTML=sim.length?'Уже есть похожие: '+sim.map(i=>'<a href="#interest-'+esc(i.id)+'">'+esc(i.title)+'</a>').join(', ')+'. Лучше вступить в существующий, чтобы людей не разделять.':'';
+}
+function openMeetupForm(preId){
+  if(needUser())return;
+  const mine=I.filter(i=>has(i.members));
+  if(!mine.length){toast('Чтобы создать встречу, сначала вступите в интерес.');return;}
+  const sel=preId&&mine.some(i=>i.id===preId)?preId:(state.view==='interest'&&mine.some(i=>i.id===state.arg)?state.arg:mine[0].id);
+  if(preId&&!mine.some(i=>i.id===preId)){toast('Создавать встречи могут только участники интереса. Сначала вступите в него.');return;}
+  const soon=new Date();soon.setDate(soon.getDate()+3);
+  openModal('Новая встреча',
+    '<form id="f-nm" novalidate>'+
+    fld('Интерес','mu-int','<select id="mu-int">'+opts(mine.map(i=>[i.id,i.title]),sel)+'</select>')+
+    fld('Название','mu-title','<input type="text" id="mu-title" maxlength="60" placeholder="Например, Вечер настолок" autocomplete="off">')+
+    fld('Подробности (по желанию)','mu-desc','<textarea id="mu-desc" maxlength="400" placeholder="Что будет, что взять с собой" style="min-height:70px"></textarea>')+
+    '<div class="field"><span class="lbl">Формат</span>'+segs('mfmt',[['offline','Офлайн'],['online','Онлайн']],'offline','Формат встречи')+'</div>'+
+    '<div id="mu-off">'+cityField('mu-city','Город',state.me.city,'')+fld('Место','mu-place','<input type="text" id="mu-place" maxlength="80" placeholder="Кафе, парк, адрес" autocomplete="off">')+'</div>'+
+    '<div id="mu-on" hidden>'+fld('Платформа','mu-plat','<input type="text" id="mu-plat" maxlength="80" placeholder="Zoom, Telegram, Discord…" autocomplete="off">')+fld('Ссылка (видна только записавшимся)','mu-link','<input type="text" id="mu-link" maxlength="300" placeholder="https://…" autocomplete="off">')+'</div>'+
+    '<div class="two">'+fld('Дата','mu-date','<input type="date" id="mu-date" min="'+ymd(new Date())+'" value="'+ymd(soon)+'">')+fld('Время','mu-time','<input type="time" id="mu-time" value="18:00">')+'</div>'+
+    '<div class="two">'+fld('Возраст от','mu-amin','<input type="number" id="mu-amin" min="18" max="99" value="18">')+fld('Возраст до','mu-amax','<input type="number" id="mu-amax" min="18" max="99" value="45">')+'</div>'+
+    '<div class="two">'+fld('Кто может прийти','mu-g','<select id="mu-g">'+opts([['any','Все'],['f','Только женщины'],['m','Только мужчины']],'any')+'</select>')+fld('Мест','mu-max','<input type="number" id="mu-max" min="2" max="100" value="10">')+'</div>'+
+    '<p class="hint">Участники интереса получат уведомление, если не отключили его.</p>'+
+    '<p class="err" id="err" role="alert"></p><button class="btn primary" type="submit">Создать встречу</button></form>');
+}
+function syncMeetupFormat(){
+  const f=document.querySelector('input[name=mfmt]:checked');if(!f)return;
+  const on=f.value==='online';
+  const a=$('#mu-off'),b=$('#mu-on');if(a)a.hidden=on;if(b)b.hidden=!on;
+}
+function openTopicForm(){
+  if(needUser())return;
+  const i=interest(state.arg);
+  if(!has(i.members)){toast('Вступите в интерес, чтобы начинать обсуждения.');return;}
+  openModal('Новая тема',
+    '<form id="f-nt" novalidate>'+fld('Тема','nt-title','<input type="text" id="nt-title" maxlength="90" placeholder="О чём хотите поговорить?" autocomplete="off">')+
+    fld('Сообщение','nt-text','<textarea id="nt-text" maxlength="600" placeholder="Расскажите подробнее"></textarea>')+
+    '<p class="err" id="err" role="alert"></p><button class="btn primary" type="submit">Опубликовать</button></form>');
+}
+function openProfileForm(){
+  const me=state.me;
+  openModal('Редактировать профиль',
+    '<form id="f-pe" novalidate>'+fld('Имя','pe-name','<input type="text" id="pe-name" maxlength="40" value="'+esc(me.name)+'">')+
+    '<div class="two">'+fld('Возраст','pe-age','<input type="number" id="pe-age" min="18" max="99" value="'+esc(me.age)+'">')+cityField('pe-city','Город',me.city,'')+'</div>'+
+    '<div class="field"><span class="lbl">Пол</span>'+genderSegs('pg',me.g)+'</div>'+
+    fld('О себе','pe-about','<textarea id="pe-about" maxlength="300">'+esc(me.about)+'</textarea>')+
+    '<p class="err" id="err" role="alert"></p><button class="btn primary" type="submit">Сохранить</button></form>');
+}
+const reportCtx={};
+function openReport(type,id){
+  if(needUser())return;
+  let uid=null,snap='';
+  if(type==='user'){uid=id;snap=who(id).name+(PEOPLE[id]&&PEOPLE[id].about?': '+PEOPLE[id].about:'');}
+  else if(type==='chat'||type==='dm'){const m=MSG[id];if(m){uid=m.author;snap=m.text;}}
+  else if(type==='topic'){I.forEach(i=>i.topics.forEach(t=>{if(t.id===id){uid=t.a;snap=t.title+(t.text?'\n'+t.text:'');}}));}
+  else if(type==='comment'){I.forEach(i=>i.topics.forEach(t=>t.comments.forEach(c=>{if(c.id===id){uid=c.a;snap=c.t;}})));}
+  else if(type==='interest'){const i=interest(id);if(i){uid=i.owner;snap=i.title+': '+i.desc;}}
+  else if(type==='meetup'){const m=M.find(x=>x.id===id);if(m){uid=m.host;snap=m.title+(m.desc?': '+m.desc:'');}}
+  reportCtx.type=type;reportCtx.id=id;reportCtx.uid=uid;reportCtx.snap=snap.slice(0,300);
+  openModal('Пожаловаться',
+    '<form id="f-rep" novalidate><p class="meta">'+esc(TARGETS[type]||'')+(snap?': «'+esc(snap.slice(0,120))+(snap.length>120?'…':'')+'»':'')+'</p>'+
+    fld('Причина','rp-reason','<select id="rp-reason">'+opts(Object.entries(REASONS),'abuse')+'</select>')+
+    fld('Комментарий (по желанию)','rp-details','<textarea id="rp-details" maxlength="300" style="min-height:70px"></textarea>')+
+    '<p class="hint">Жалобу увидит только модератор. Человеку она не показывается.</p>'+
+    '<p class="err" id="err" role="alert"></p><button class="btn primary" type="submit">Отправить жалобу</button></form>');
+}
+
+/* ---------- фото ---------- */
+function resizeImage(file,max){
+  return new Promise((resolve,reject)=>{
+    const url=URL.createObjectURL(file),img=new Image();
+    img.onload=()=>{
+      const k=Math.min(1,max/Math.max(img.width,img.height));
+      const w=Math.max(1,Math.round(img.width*k)),h=Math.max(1,Math.round(img.height*k));
+      const c=document.createElement('canvas');c.width=w;c.height=h;
+      c.getContext('2d').drawImage(img,0,0,w,h);
+      URL.revokeObjectURL(url);
+      c.toBlob(b=>b?resolve(b):reject(new Error('Не удалось обработать фото.')),'image/jpeg',0.85);
+    };
+    img.onerror=()=>{URL.revokeObjectURL(url);reject(new Error('Не удалось открыть этот файл как изображение.'));};
+    img.src=url;
+  });
+}
+async function uploadAvatar(file){
+  const uid=state.session.user.id;
+  const blob=await resizeImage(file,512);
+  const path=uid+'/'+Date.now()+'.jpg';
+  const up=await sb.storage.from('avatars').upload(path,blob,{contentType:'image/jpeg',cacheControl:'3600'});
+  if(up.error)throw up.error;
+  const url=sb.storage.from('avatars').getPublicUrl(path).data.publicUrl;
+  const old=state.me&&state.me.photo;
+  const upd=await sb.from('profiles').update({photo_url:url}).eq('id',uid);
+  if(upd.error)throw upd.error;
+  if(old){const k=old.indexOf('/avatars/');if(k>=0){try{sb.storage.from('avatars').remove([decodeURIComponent(old.slice(k+9))]);}catch(e){}}}
+}
+
+/* ---------- обработчики ---------- */
+const ACT={
+  'join-interest':id=>run(()=>toggleInterest(id)),
+  'new-interest':(id,el)=>openInterestForm(null,el&&el.dataset.title),
+  'edit-interest':id=>{const i=interest(id);if(i)openInterestForm(i);},
+  'del-interest':id=>{const i=interest(id);if(!i)return;confirmModal('Удалить интерес?','«'+i.title+'» исчезнет вместе с чатом, обсуждениями и встречами. Это нельзя отменить.','Удалить',()=>run(async()=>{await removeRow('interests',id,'Интерес удалён.');closeModal();go('interests');await afterChange();}),true);},
+  'new-meetup':id=>openMeetupForm(id),
+  'join-meetup':id=>run(()=>toggleMeetup(id)),
+  'del-meetup':id=>{const m=M.find(x=>x.id===id);if(!m)return;confirmModal('Удалить встречу?','«'+m.title+'» будет удалена для всех, кто записался.','Удалить',()=>run(async()=>{await removeRow('meetups',id,'Встреча удалена.');closeModal();await afterChange();}),true);},
+  'tab':(id,el)=>{state.tab=el.dataset.tab;state.topic=null;render();refresh();},
+  'open-topic':id=>{state.topic=id;render();window.scrollTo(0,0);},
+  'close-topic':()=>{state.topic=null;render();},
+  'new-topic':()=>openTopicForm(),
+  'del-topic':id=>confirmModal('Удалить тему?','Тема и все ответы в ней будут удалены.','Удалить',()=>run(async()=>{await removeRow('topics',id,'Тема удалена.');state.topic=null;closeModal();await afterChange();}),true),
+  'del-comment':id=>run(async()=>{await removeRow('comments',id,'Ответ удалён.');await afterChange();}),
+  'del-chat':id=>run(async()=>{await removeRow('chat_messages',id,'Сообщение удалено.');await pollChat(true);}),
+  'del-dm':id=>run(async()=>{await removeRow('direct_messages',id,'Сообщение удалено.');await pollThread(true);}),
+  'toggle-mine':()=>{state.onlyMine=!state.onlyMine;render();},
+  'reset-filters':()=>{state.f={city:'',interest:'',gender:'',age:'',format:''};render();},
+  'logout':()=>run(logout),
+  'retry':()=>{state.loadError='';render();refresh();},
+  'auth-mode':(id,el)=>{state.authMode=el.dataset.mode;state.notice='';render();},
+  'to-login':()=>{state.authMode='login';state.notice='';},
+  'close':()=>closeModal(),
+  'back':()=>{if(history.length>1)history.back();else go('home');},
+  'confirm-ok':()=>{const cb=confirmCb;confirmCb=null;if(cb)cb();},
+  'report':(id,el)=>openReport(el.dataset.type,id),
+  'block':id=>{const p=who(id);confirmModal('Заблокировать '+p.name+'?','Вы не сможете переписываться, а его сообщения в чатах и обсуждениях будут скрыты от вас. Разблокировать можно в любой момент.','Заблокировать',()=>run(async()=>{const r=await sb.from('blocks').insert({blocker_id:state.me.id,blocked_id:id});if(r.error)throw r.error;closeModal();toast('Человек заблокирован.');await afterChange();}),true);},
+  'unblock':id=>run(async()=>{const r=await sb.from('blocks').delete().eq('blocker_id',state.me.id).eq('blocked_id',id);if(r.error)throw r.error;toast('Блокировка снята.');await afterChange();}),
+  'edit-profile':()=>openProfileForm(),
+  'del-account':()=>openModal('Удалить профиль?','<p>Будут удалены ваш профиль, фото, сообщения, темы, ответы и встречи, которые вы организовали. Интересы, которые вы создали, останутся у участников. Это нельзя отменить.</p><div class="check" style="margin-top:12px"><input type="checkbox" id="da-ok"><label for="da-ok">Да, я хочу удалить профиль и все свои данные</label></div><p class="err" id="err" role="alert"></p><div class="row" style="margin-top:14px"><button class="btn warn" type="button" data-act="del-account-ok">Удалить навсегда</button><button class="btn" type="button" data-act="close">Отмена</button></div>'),
+  'del-account-ok':()=>{if(!$('#da-ok')||!$('#da-ok').checked){setErr('Поставьте галочку, чтобы подтвердить.');return;}run(deleteAccount);},
+  'open-note':id=>{const n=NOTES.find(x=>x.id===id);if(!n)return;run(async()=>{
+    if(!n.read_at){n.read_at=new Date().toISOString();state.unreadN=NOTES.filter(x=>!x.read_at).length;renderTop();await sb.from('notifications').update({read_at:n.read_at}).eq('id',id);}
+    const [h,tab]=String(n.link||'').split('|');
+    if(h){if(tab){state.pendingTab=tab;if(h==='interest-'+state.arg)state.tab=tab;}go(h);}else fillNotes();
+  });},
+  'read-all':()=>run(async()=>{const r=await sb.from('notifications').update({read_at:new Date().toISOString()}).is('read_at',null);if(r.error)throw r.error;await loadNotes();}),
+  'admin-tab':(id,el)=>{state.adminTab=el.dataset.tab;render();},
+  'adm-ban':(id,el)=>run(async()=>{const r=await sb.rpc('admin_set_ban',{p_user:id,p_banned:true});if(r.error)throw r.error;ADMIN.banned.add(id);if(el&&el.dataset.report)await sb.rpc('resolve_report',{p_report:el.dataset.report,p_status:'done'});toast('Человек ограничен.');if(state.view==='admin')await loadAdmin();}),
+  'adm-unban':id=>run(async()=>{const r=await sb.rpc('admin_set_ban',{p_user:id,p_banned:false});if(r.error)throw r.error;ADMIN.banned.delete(id);toast('Ограничение снято.');if(state.view==='admin')await loadAdmin();}),
+  'adm-done':id=>run(async()=>{const r=await sb.rpc('resolve_report',{p_report:id,p_status:'done'});if(r.error)throw r.error;await loadAdmin();}),
+  'adm-dismiss':id=>run(async()=>{const r=await sb.rpc('resolve_report',{p_report:id,p_status:'dismissed'});if(r.error)throw r.error;await loadAdmin();}),
+  'adm-del':id=>run(async()=>{
+    const rep=ADMIN.reports.find(x=>x.id===id);if(!rep)return;
+    const tbl={topic:'topics',comment:'comments',chat:'chat_messages',interest:'interests',meetup:'meetups'}[rep.target_type];
+    if(!tbl)return;
+    const r=await sb.from(tbl).delete().eq('id',rep.target_id);if(r.error)throw r.error;
+    await sb.rpc('resolve_report',{p_report:id,p_status:'done'});
+    toast('Содержимое удалено, жалоба закрыта.');await loadAdmin();
+  }),
+  'adm-city-del':id=>run(async()=>{const r=await sb.from('cities').delete().eq('id',id);if(r.error)throw r.error;toast('Город удалён из подсказок.');await loadAdmin();})
+};
+async function deleteAccount(){
+  const uid=state.session.user.id;
+  try{const l=await sb.storage.from('avatars').list(uid);if(!l.error&&l.data&&l.data.length)await sb.storage.from('avatars').remove(l.data.map(f=>uid+'/'+f.name));}catch(e){}
+  const r=await sb.rpc('delete_my_account');
+  if(r.error)throw r.error;
+  try{await sb.auth.signOut({scope:'local'});}catch(e){}
+  state.session=null;clearData();
+  closeModal();toast('Профиль удалён. Все ваши данные стёрты.');
+  go('home');
+}
+
+document.addEventListener('click',e=>{
+  const li=e.target.closest('.combo-list li');
+  if(li){pickCity(li);return;}
+  const el=e.target.closest('[data-act]');
+  if(el){
+    const fn=ACT[el.dataset.act];
+    if(fn){if(!(el.tagName==='A'&&el.dataset.act==='to-login'))e.preventDefault();fn(el.dataset.id,el);}
+    return;
+  }
+  if(e.target.id==='ov')closeModal();
+});
+document.addEventListener('mousedown',e=>{const li=e.target.closest('.combo-list li');if(li){e.preventDefault();pickCity(li);}});
+document.addEventListener('keydown',e=>{
+  if(e.key==='Escape'){
+    const open=document.querySelector('.combo-list:not([hidden])');
+    if(open){const inp=document.querySelector('[data-list="'+open.id+'"]');if(inp)hideCombo(inp);return;}
+    if(!$('#ov').hidden)closeModal();
+    return;
+  }
+  const inp=e.target;
+  if(inp&&inp.classList&&inp.classList.contains('cityin')){
+    if(e.key==='ArrowDown'){if(moveCombo(inp,1))e.preventDefault();}
+    else if(e.key==='ArrowUp'){if(moveCombo(inp,-1))e.preventDefault();}
+    else if(e.key==='Enter'){
+      const list=document.getElementById(inp.dataset.list);
+      const sel=list&&!list.hidden&&list.querySelector('li[aria-selected="true"]');
+      if(sel){e.preventDefault();pickCity(sel);}
+    }
+  }
+});
+document.addEventListener('focusout',e=>{if(e.target.classList&&e.target.classList.contains('cityin'))setTimeout(()=>{if(document.activeElement!==e.target)hideCombo(e.target);},150);});
+document.addEventListener('input',e=>{
+  const t=e.target,id=t.id;
+  if(id==='q'){state.q=t.value;fillInterests();}
+  else if(id==='f-age'){state.f.age=t.value;fillMeetups();}
+  else if(id==='ni-title')showSimilar();
+  else if(t.classList&&t.classList.contains('cityin')){clearTimeout(comboTimer);comboTimer=setTimeout(()=>suggestCities(t),180);}
+});
+document.addEventListener('change',e=>{
+  const t=e.target,id=t.id;
+  if(id==='f-city'){state.f.city=t.value;fillMeetups();}
+  else if(id==='f-format'){state.f.format=t.value;fillMeetups();}
+  else if(id==='f-interest'){state.f.interest=t.value;fillMeetups();}
+  else if(id==='f-gender'){state.f.gender=t.value;fillMeetups();}
+  else if(id==='cat'){state.cat=t.value;fillInterests();}
+  else if(id==='fmt'){state.fmt=t.value;fillInterests();}
+  else if(t.name==='nfmt')syncCityVisibility();
+  else if(t.name==='mfmt')syncMeetupFormat();
+  else if(id==='notify-sel'){
+    const i=interest(state.arg);if(!i)return;
+    const val=t.value;
+    run(async()=>{const r=await sb.from('interest_members').update({notify:val}).eq('interest_id',i.id).eq('user_id',state.me.id);if(r.error)throw r.error;i.notify=val;toast('Сохранено: '+NOTIFY[val].toLowerCase()+'.');});
+  }
+  else if(id==='photo'){
+    const file=t.files&&t.files[0];if(!file)return;
+    state.photoFile=file;
+    const r=new FileReader();
+    r.onload=()=>{state.photoUrl=r.result;const pv=$('#photo-prev');if(pv)pv.innerHTML='<span class="av av-lg"><img src="'+esc(r.result)+'" alt=""></span>';};
+    r.readAsDataURL(file);
+  }
+  else if(id==='photo-change'){
+    const file=t.files&&t.files[0];if(!file)return;
+    t.value='';
+    run(async()=>{toast('Загружаем фото…');await uploadAvatar(file);await afterChange();toast('Фото обновлено.');});
+  }
+});
+
+document.addEventListener('submit',e=>{
+  e.preventDefault();
+  if(!SB_OK)return;
+  const id=e.target.id;
+  if(id==='login')submitting(doLogin);
+  else if(id==='signup')submitting(doSignup);
+  else if(id==='f-ni')submitting(saveInterest);
+  else if(id==='f-nm')submitting(createMeetup);
+  else if(id==='f-nt')submitting(createTopic);
+  else if(id==='f-pe')submitting(saveProfile);
+  else if(id==='f-rep')submitting(sendReport);
+  else if(id==='reply')run(sendReply);
+  else if(id==='chat-form')run(sendChat);
+  else if(id==='dm-form')run(sendDM);
+});
+
+/* ---------- отправка форм ---------- */
+async function afterAuth(msg){
+  try{await reload();state.loadError='';}catch(e){state.loadError=errText(e);}
+  const to=state.after||'home';state.after=null;state.notice='';
+  toast(msg);
+  go(to);
+  refreshCounts();
+}
+async function doLogin(){
+  const email=$('#li-email').value.trim(),pw=$('#li-pw').value;
+  if(!email||!pw)return setErr('Введите почту и пароль.');
+  const r=await sb.auth.signInWithPassword({email,password:pw});
+  if(r.error)return setErr(errText(r.error));
+  state.session=r.data.session;
+  await afterAuth('С возвращением!');
+}
+async function doSignup(){
+  const email=$('#su-email').value.trim(),pw=$('#su-pw').value,name=$('#su-name').value.trim();
+  const age=parseInt($('#su-age').value,10),city=$('#su-city').value.trim(),about=$('#su-about').value.trim();
+  const gr=document.querySelector('input[name=sg]:checked');
+  if(!email||email.indexOf('@')<1)return setErr('Введите адрес почты.');
+  if(pw.length<6)return setErr('Пароль должен быть не короче 6 символов.');
+  if(!name)return setErr('Введите имя.');
+  if(!(age>=18))return setErr('Сайт для тех, кому есть 18 лет.');
+  if(age>99)return setErr('Проверьте возраст.');
+  if(city.length<2)return setErr('Укажите город.');
+  if(!gr)return setErr('Выберите пол.');
+  if(!$('#su-consent').checked)return setErr('Поставьте галочку согласия, чтобы продолжить.');
+  const r=await sb.auth.signUp({email,password:pw,options:{data:{name,age,city,gender:gr.value,about,consent:'true'}}});
+  if(r.error)return setErr(errText(r.error));
+  if(!r.data.session){
+    state.notice='Мы отправили письмо на '+email+'. Перейдите по ссылке в нём, затем войдите.';
+    state.authMode='login';render();return;
+  }
+  state.session=r.data.session;
+  const file=state.photoFile;
+  state.photoFile=null;state.photoUrl=null;
+  if(file){
+    try{await reload();await uploadAvatar(file);}
+    catch(e){toast('Профиль создан, но фото загрузить не удалось. Попробуйте позже в профиле.');}
+  }
+  await afterAuth('Добро пожаловать, '+name.split(' ')[0]+'!');
+}
+async function saveProfile(){
+  const name=$('#pe-name').value.trim(),age=parseInt($('#pe-age').value,10),city=$('#pe-city').value.trim(),about=$('#pe-about').value.trim();
+  const gr=document.querySelector('input[name=pg]:checked');
+  if(!name)return setErr('Введите имя.');
+  if(!(age>=18&&age<=99))return setErr('Возраст от 18 до 99.');
+  if(city.length<2)return setErr('Укажите город.');
+  if(!gr)return setErr('Выберите пол.');
+  const r=await sb.from('profiles').update({name,age,city,gender:gr.value,about}).eq('id',state.me.id);
+  if(r.error)return setErr(errText(r.error));
+  closeModal();toast('Профиль сохранён.');
+  await afterChange();
+}
+async function saveInterest(){
+  const f=$('#f-ni'),editId=f.dataset.id;
+  const title=$('#ni-title').value.trim(),desc=$('#ni-desc').value.trim();
+  if(title.length<2)return setErr('Название должно быть не короче 2 символов.');
+  const fm=(document.querySelector('input[name=nfmt]:checked')||{value:'both'}).value;
+  const row={
+    title,description:desc||'Описание пока не добавлено.',
+    hue:parseInt((document.querySelector('input[name=hue]:checked')||{value:190}).value,10),
+    category:$('#ni-cat').value,format:fm,
+    city:fm==='online'?null:($('#ni-city').value.trim()||null),
+    tags:tagsFrom($('#ni-tags').value)
+  };
+  if(editId){
+    const r=await sb.from('interests').update(row).eq('id',editId);
+    if(r.error)return setErr(errText(r.error));
+    closeModal();toast('Интерес сохранён.');await afterChange();return;
+  }
+  row.owner_id=state.me.id;
+  const r=await sb.from('interests').insert(row).select('id').single();
+  if(r.error)return setErr(errText(r.error));
+  closeModal();toast('Интерес создан. Вы в нём первый участник.');
+  try{await reload();}catch(e){}
+  state.pendingTab='chat';
+  go('interest-'+r.data.id);
+}
+async function createMeetup(){
+  const title=$('#mu-title').value.trim(),desc=$('#mu-desc').value.trim(),date=$('#mu-date').value,time=$('#mu-time').value||'18:00';
+  const online=document.querySelector('input[name=mfmt]:checked').value==='online';
+  const city=online?'':$('#mu-city').value.trim();
+  const place=online?$('#mu-plat').value.trim():$('#mu-place').value.trim();
+  const link=online?$('#mu-link').value.trim():'';
+  const amin=parseInt($('#mu-amin').value,10),amax=parseInt($('#mu-amax').value,10),max=parseInt($('#mu-max').value,10);
+  if(title.length<2)return setErr('Введите название встречи.');
+  if(!online&&city.length<2)return setErr('Укажите город.');
+  if(!place)return setErr(online?'Укажите платформу, например Zoom или Telegram.':'Укажите место.');
+  if(link&&!/^https?:\/\/\S+$/i.test(link))return setErr('Ссылка должна начинаться с https://');
+  if(!date)return setErr('Выберите дату.');
+  if(!(amin>=18)||!(amax>=amin)||amax>99)return setErr('Проверьте возраст: от 18 лет, «до» не меньше «от».');
+  if(!(max>=2&&max<=100))return setErr('Мест должно быть от 2 до 100.');
+  const start=new Date(date+'T'+time);
+  if(isNaN(start.getTime()))return setErr('Проверьте дату и время.');
+  if(start.getTime()<Date.now())return setErr('Дата встречи должна быть в будущем.');
+  const r=await sb.rpc('create_meetup',{p_interest:$('#mu-int').value,p_title:title,p_description:desc,p_format:online?'online':'offline',p_city:city||null,p_place:place,p_link:link||null,p_starts:start.toISOString(),p_age_min:amin,p_age_max:amax,p_gender:$('#mu-g').value,p_max:max});
+  if(r.error)return setErr(errText(r.error));
+  state.f={city:'',interest:'',gender:'',age:'',format:''};
+  closeModal();toast('Встреча создана. Участники интереса получат уведомление.');
+  if(state.view==='interest'){state.tab='meets';state.topic=null;}
+  await afterChange();
+}
+async function createTopic(){
+  const title=$('#nt-title').value.trim(),body=$('#nt-text').value.trim();
+  if(title.length<2)return setErr('Введите тему.');
+  const r=await sb.from('topics').insert({interest_id:state.arg,author_id:state.me.id,title,body}).select('id').single();
+  if(r.error)return setErr(errText(r.error));
+  closeModal();toast('Тема опубликована.');
+  state.topic=r.data.id;
+  await afterChange();
+}
+async function sendReply(){
+  const i=interest(state.arg),t=i&&i.topics.find(x=>x.id===state.topic),txt=$('#c-text').value.trim();
+  if(!t)return;
+  if(needUser())return;
+  if(!has(i.members)){toast('Вступите в интерес, чтобы писать в обсуждениях.');return;}
+  if(!txt){toast('Напишите сообщение.');return;}
+  const r=await sb.from('comments').insert({topic_id:t.id,author_id:state.me.id,body:txt});
+  if(r.error)throw r.error;
+  await afterChange();
+}
+async function sendChat(){
+  const inp=$('#chat-in'),txt=inp.value.trim(),i=interest(state.arg);
+  if(!txt||!i)return;
+  const r=await sb.from('chat_messages').insert({interest_id:i.id,author_id:state.me.id,body:txt});
+  if(r.error)throw r.error;
+  inp.value='';
+  await pollChat(true);
+}
+async function sendDM(){
+  const inp=$('#dm-in'),txt=inp.value.trim(),o=state.arg;
+  if(!txt||!UUID.test(o||''))return;
+  const r=await sb.from('direct_messages').insert({sender_id:state.me.id,recipient_id:o,body:txt});
+  if(r.error)throw r.error;
+  inp.value='';
+  await pollThread(true);
+}
+async function sendReport(){
+  const c=reportCtx;
+  const r=await sb.from('reports').insert({reporter_id:state.me.id,target_type:c.type,target_id:c.id,target_user_id:c.uid||null,reason:$('#rp-reason').value,details:$('#rp-details').value.trim(),snapshot:c.snap||''});
+  if(r.error)return setErr(errText(r.error));
+  closeModal();toast('Спасибо, жалоба отправлена модератору.');
+}
+
+/* ---------- фоновое обновление ---------- */
+let tick=0;
+function live_tick(){
+  if(!state.session||!state.loaded||!state.me||document.hidden)return;
+  tick++;
+  if(live.chatId)pollChat(false).catch(()=>{});
+  if(live.threadId)pollThread(false).catch(()=>{});
+  if(tick%5===0){
+    refreshCounts();
+    if(state.view==='notifications')loadNotes();
+    if(state.view==='messages')loadConvos();
+  }
+}
+document.addEventListener('visibilitychange',()=>{if(!document.hidden&&state.session&&state.loaded){refreshCounts();if(live.chatId)pollChat(false);if(live.threadId)pollThread(false);}});
+
+/* ---------- запуск ---------- */
+async function init(){
+  window.addEventListener('hashchange',route);
+  if(SB_OK){
+    try{const r=await sb.auth.getSession();state.session=r.data.session;}catch(e){}
+    sb.auth.onAuthStateChange((ev,session)=>{
+      state.session=session;
+      if(ev==='SIGNED_OUT')setTimeout(()=>{clearData();render();},0);
+    });
+    setInterval(live_tick,4000);
+  }
+  route();
+}
+init();
+})();

@@ -42,7 +42,7 @@ const GHOST={name:'Пользователь',hue:200};
 const HUES=[190,40,350,260,120,300];
 const PCOLS='id,name,age,city,gender,about,photo_url,created_at';
 const RX={like:'\u{1F44D}',heart:'\u2764\uFE0F',laugh:'\u{1F602}',fire:'\u{1F525}',clap:'\u{1F44F}'};
-const FOUNDERS_N=25;
+const FOUNDERS_N=1000;
 
 function ago(iso){
   const s=(Date.now()-new Date(iso).getTime())/1000;
@@ -439,7 +439,7 @@ function chatTab(i){
   if(!has(i.members)&&MYBANS.has(i.id))return '<div class="empty"><p>Создатель интереса закрыл вам доступ в этот чат.</p></div>';
   if(!has(i.members))return '<div class="empty"><p>Общий чат видят и пишут в него только участники интереса.</p><button class="btn primary" type="button" data-act="join-interest" data-id="'+esc(i.id)+'">Вступить в интерес</button></div>';
   return '<div class="chat"><div class="chat-list" id="chat-list" aria-live="polite" aria-label="Сообщения чата">'+(cache.chat[i.id]||'<p class="meta empty-chat">Загружаем…</p>')+'</div>'+
-    '<div class="hints" id="chat-hints"></div><div class="cbar" id="cbar-chat" hidden></div><form class="chat-form" id="chat-form" novalidate><label class="sr" for="chat-in">Сообщение</label><textarea id="chat-in" rows="1" maxlength="500" autocomplete="off" placeholder="Напишите сообщение и познакомьтесь"></textarea><button class="btn primary" type="submit">Отправить</button></form>'+
+    '<div class="hints" id="chat-hints"></div><div class="cbar" id="cbar-chat" hidden></div><form class="chat-form" id="chat-form" novalidate><label class="sr" for="chat-in">Сообщение</label><textarea id="chat-in" rows="1" maxlength="5000" autocomplete="off" placeholder="Напишите сообщение и познакомьтесь"></textarea><button class="btn primary" type="submit">Отправить</button></form>'+
     '<p class="hint">Новые сообщения появляются сами, каждые несколько секунд. Будьте вежливы: на грубость можно пожаловаться.<span class="desk-only"> Enter отправляет, Shift+Enter переносит строку.</span></p></div>';
 }
 function talksList(i){
@@ -458,7 +458,7 @@ function topicView(i){
     '<div class="subtools">'+((own||admin)?'<button class="lnk danger" type="button" data-act="del-topic" data-id="'+esc(t.id)+'">Удалить тему</button>':'')+(!own?'<button class="lnk" type="button" data-act="report" data-type="topic" data-id="'+esc(t.id)+'">Пожаловаться</button>':'')+'</div>'+
     '<div class="comments">'+t.comments.filter(c=>!BLOCKED.has(c.a)).map(c=>'<div class="comment">'+avLink(c.a,'md')+'<div><p>'+pLink(c.a)+' <span class="meta">'+esc(ago(c.at))+'</span></p><p>'+esc(c.t)+'</p>'+
       '<p class="macts" style="display:flex;gap:12px">'+((isMe(c.a)||admin)?'<button class="lnk danger" type="button" data-act="del-comment" data-id="'+esc(c.id)+'">Удалить</button>':'')+(!isMe(c.a)?'<button class="lnk" type="button" data-act="report" data-type="comment" data-id="'+esc(c.id)+'">Пожаловаться</button>':'')+'</p></div></div>').join('')+'</div>'+
-    '<form class="reply" id="reply" novalidate><label class="sr" for="c-text">Ваш ответ</label><textarea id="c-text" placeholder="Напишите ответ" rows="3" maxlength="600"></textarea><button class="btn primary" type="submit">Отправить</button></form>';
+    '<form class="reply" id="reply" novalidate><label class="sr" for="c-text">Ваш ответ</label><textarea id="c-text" placeholder="Напишите ответ" rows="3" maxlength="2000"></textarea><button class="btn primary" type="submit">Отправить</button></form>';
 }
 function meetsTab(i){
   const list=M.filter(m=>m.interestId===i.id).sort((a,b)=>a.when-b.when);
@@ -552,7 +552,7 @@ function vThread(){
     (blocked?'<button class="lnk" type="button" data-act="unblock" data-id="'+esc(id)+'">Разблокировать</button>':'<button class="lnk" type="button" data-act="block" data-id="'+esc(id)+'">Заблокировать</button>')+
     '<button class="lnk" type="button" data-act="report" data-type="user" data-id="'+esc(id)+'">Пожаловаться</button></div></div>'+
     '<div class="dm-list" id="dm-list" aria-live="polite">'+(cache.dm[id]||'<p class="meta empty-chat">Загружаем…</p>')+'</div>'+
-    (can?'<div class="hints" id="dm-hints"></div><div class="cbar" id="cbar-dm" hidden></div><form class="chat-form" id="dm-form" novalidate style="margin-top:12px"><label class="sr" for="dm-in">Сообщение</label><textarea id="dm-in" rows="1" maxlength="1000" autocomplete="off" placeholder="Напишите сообщение"></textarea><button class="btn primary" type="submit">Отправить</button></form>'
+    (can?'<div class="hints" id="dm-hints"></div><div class="cbar" id="cbar-dm" hidden></div><form class="chat-form" id="dm-form" novalidate style="margin-top:12px"><label class="sr" for="dm-in">Сообщение</label><textarea id="dm-in" rows="1" maxlength="5000" autocomplete="off" placeholder="Напишите сообщение"></textarea><button class="btn primary" type="submit">Отправить</button></form>'
       :'<div class="notice" style="margin-top:12px"><p>'+why+'</p></div>');
 }
 async function openThread(id){
@@ -700,7 +700,7 @@ function openLink(link){
   if(tab){state.pendingTab=tab;if(h==='interest-'+state.arg)state.tab=tab;}
   go(h);
 }
-const foundBadge=id=>FOUNDERS.has(id)?'<span class="chip founder" title="Один из первых '+FOUNDERS_N+' участников">Один из первых</span>':'';
+const foundBadge=id=>FOUNDERS.has(id)?'<span class="chip founder" title="Среди первых '+FOUNDERS_N+' участников">Первые 1000</span>':'';
 
 /* ---------- главная: «скоро», лента, приглашение ---------- */
 function soonCard(){
@@ -1188,7 +1188,7 @@ function openTopicForm(){
   if(!has(i.members)){toast('Вступите в интерес, чтобы начинать обсуждения.');return;}
   openModal('Новая тема',
     '<form id="f-nt" novalidate>'+fld('Тема','nt-title','<input type="text" id="nt-title" maxlength="90" placeholder="О чём хотите поговорить?" autocomplete="off">')+
-    fld('Сообщение','nt-text','<textarea id="nt-text" maxlength="600" placeholder="Расскажите подробнее"></textarea>')+
+    fld('Сообщение','nt-text','<textarea id="nt-text" maxlength="2000" placeholder="Расскажите подробнее"></textarea>')+
     '<p class="err" id="err" role="alert"></p><button class="btn primary" type="submit">Опубликовать</button></form>');
 }
 function openProfileForm(){
@@ -1277,12 +1277,26 @@ function updBar(kind){
   b.innerHTML='<div class="cq"><b>'+(c.edit?'Изменение сообщения':'Ответ: '+esc(who(m&&m.author).name))+'</b><span>'+esc(snip(m?m.text:'Сообщение',90))+'</span></div><button type="button" class="lnk" data-act="cancel-compose" data-kind="'+kind+'">Отмена</button>';
 }
 function msgInput(kind){return $(kind==='dm'?'#dm-in':'#chat-in');}
+const MSG_PART=2000,MSG_MAX=5000;
+function splitMsg(t){
+  const out=[];
+  while(t.length>MSG_PART){
+    let k=t.lastIndexOf('\n',MSG_PART);
+    if(k<MSG_PART*0.5)k=t.lastIndexOf(' ',MSG_PART);
+    if(k<MSG_PART*0.5)k=MSG_PART;
+    out.push(t.slice(0,k).trim());
+    t=t.slice(k).trim();
+  }
+  if(t)out.push(t);
+  return out.filter(Boolean);
+}
 async function submitMsg(kind){
   const dm=kind==='dm',inp=msgInput(kind),txt=inp.value.trim();
   if(!txt)return;
   const tbl=dm?'direct_messages':'chat_messages',c=COMPOSE[kind]||{};
   if(c.edit){
     const old=MSG[c.edit];
+    if(txt.length>MSG_PART){toast('При изменении сообщение не может быть длиннее '+MSG_PART+' символов. Сократите текст.');return;}
     if(!old||old.text!==txt){
       const r=await sb.from(tbl).update({body:txt}).eq('id',c.edit);
       if(r.error)throw r.error;
@@ -1292,9 +1306,17 @@ async function submitMsg(kind){
     let row;
     if(dm){const o=state.arg;if(!UUID.test(o||''))return;row={sender_id:state.me.id,recipient_id:o,body:txt};}
     else{const i=interest(state.arg);if(!i)return;row={interest_id:i.id,author_id:state.me.id,body:txt};}
-    if(c.reply&&HAS_RE)row.reply_to=c.reply;
-    const r=await sb.from(tbl).insert(row);
-    if(r.error)throw r.error;
+    const parts=splitMsg(txt.slice(0,MSG_MAX));
+    for(let k=0;k<parts.length;k++){
+      const one=Object.assign({},row,{body:parts[k]});
+      if(k===0&&c.reply&&HAS_RE)one.reply_to=c.reply;
+      const r=await sb.from(tbl).insert(one);
+      if(r.error){
+        inp.value=parts.slice(k).join('\n');grow(inp);
+        if(k>0)toast('Отправлена только часть сообщения ('+k+' из '+parts.length+'). Остаток оставлен в поле, отправьте его ещё раз.');
+        throw r.error;
+      }
+    }
   }
   COMPOSE[kind]={};updBar(kind);
   inp.value='';grow(inp);
@@ -1526,7 +1548,7 @@ function pushHtml(){
     return t+'<p>'+(ios?'На iPhone уведомления работают только после установки: добавьте сайт на экран «Домой» из Safari (нужна iOS 16.4 или новее) и откройте его оттуда.':'Этот браузер не поддерживает уведомления. Попробуйте Chrome.')+'</p>'+(ios&&!isStandalone()?'<button class="btn sm" type="button" data-act="install-help">Как добавить на экран «Домой»</button>':'');
   }
   if(Notification.permission==='denied')return t+'<p>Вы запретили уведомления для этого сайта. Разрешите их в настройках браузера (значок замка рядом с адресом, пункт «Уведомления») и обновите страницу.</p>';
-  if(PUSH.sub&&Notification.permission==='granted')return '<b>Уведомления на этом устройстве включены</b><p>Мы сообщим о личных сообщениях, заявках в друзья и новых встречах, даже когда сайт закрыт.</p><button class="btn sm" type="button" data-act="push-off">Выключить</button>';
+  if(PUSH.sub&&Notification.permission==='granted')return '<b>Уведомления на этом устройстве включены</b><p>Мы сообщим о личных сообщениях, заявках в друзья и новых встречах, даже когда сайт закрыт.</p><div class="row"><button class="btn sm" type="button" data-act="push-test">Проверить уведомление</button><button class="btn sm" type="button" data-act="push-off">Выключить</button></div>';
   return t+'<p>Сообщим о личных сообщениях, заявках в друзья и новых встречах, даже когда сайт закрыт.</p><button class="btn primary sm" type="button" data-act="push-on">Включить уведомления</button>';
 }
 function pushCard(){return '<section class="push" id="push-box">'+pushHtml()+'</section>';}
@@ -1632,6 +1654,11 @@ const ACT={
     const r=await sb.rpc('save_push_subscription',{p_endpoint:j.endpoint,p_p256dh:j.keys.p256dh,p_auth:j.keys.auth});
     if(r.error)throw r.error;
     PUSH.sub=true;fillPush();toast('Уведомления включены.');
+  }),
+  'push-test':()=>run(async()=>{
+    const r=await sb.rpc('push_test');
+    if(r.error)throw r.error;
+    openModal('Проверка уведомлений','<p>'+esc(String(r.data||''))+'</p><div class="row" style="margin-top:14px"><button class="btn" type="button" data-act="close">Закрыть</button></div>');
   }),
   'push-off':()=>run(async()=>{
     const reg=await navigator.serviceWorker.ready;

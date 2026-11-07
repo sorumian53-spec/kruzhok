@@ -9,7 +9,7 @@
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" type="image/png" href="icon-192.png">
 <link rel="apple-touch-icon" href="icon-180.png">
-<link rel="stylesheet" href="style.css?v=4">
+<link rel="stylesheet" href="style.css?v=5">
 </head>
 <body>
 
@@ -25,7 +25,7 @@
 </header>
 
 <main class="wrap" id="view"></main>
-<footer class="wrap foot"><p>Кружок: тестовая версия сайта знакомств по интересам. Список городов: <a href="https://github.com/hflabs/city" rel="noopener noreferrer" target="_blank">hflabs/city</a> (данные DaData.ru, лицензия CC BY-SA 4.0).</p></footer>
+<footer class="wrap foot"><p><button type="button" class="lnk" data-act="install-help">Установить на телефон</button> · <button type="button" class="lnk" data-act="about">О сайте</button></p></footer>
 
 <div class="overlay" id="ov" hidden>
   <div class="modal" role="dialog" aria-modal="true" aria-labelledby="mt">
@@ -33,10 +33,16 @@
     <div id="mb"></div>
   </div>
 </div>
+<div class="overlay ov2" id="ov2" hidden>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="mt2">
+    <div class="mh"><h2 id="mt2">Выберите область фото</h2><button class="x" type="button" data-act="crop-cancel" aria-label="Закрыть">&times;</button></div>
+    <div id="mb2"></div>
+  </div>
+</div>
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
 <script src="supabase.js"></script>
 <script src="config.js"></script>
-<script src="app.js?v=4"></script>
+<script src="app.js?v=5"></script>
 </body>
 </html>

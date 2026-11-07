@@ -2,7 +2,7 @@
 'use strict';
 
 /* =====================================================================
-   Кружок: сайт знакомств по интересам. Версия 2.
+   Кружок: сайт знакомств по интересам. Версия 5.
    ===================================================================== */
 
 /* ---------- настройки и подключение ---------- */
@@ -91,6 +91,9 @@ let PEOPLE={},I=[],M=[],LINKS={},BLOCKED=new Set(),NOTES=[];
 let CONVOS=null,ADMIN={reports:[],banned:new Set(),cities:[]};
 let UNREAD={},REACT={},FOUNDERS=new Set();
 let V4=true,HAS_DMRX=true,BANS={},MYBANS=new Set();
+let HAS_PH=true,HAS_FR=true,HAS_RE=true,FRIENDS=[];
+const COMPOSE={chat:{},dm:{}};
+const pcols=()=>HAS_PH?PCOLS+',photos':PCOLS;
 const INT_COLS='id,title,description,hue,owner_id,category,tags,format,city,created_at';
 const live={chatId:null,chatSig:'',threadId:null,threadSig:''};
 const MSG={};
@@ -100,7 +103,7 @@ const who=id=>PEOPLE[id]||GHOST;
 const has=arr=>!!(state.me&&arr.includes(state.me.id));
 const isMe=id=>!!(state.me&&state.me.id===id);
 const curTab=i=>state.tab||(has(i.members)?'chat':'talks');
-function clearData(){PEOPLE={};I=[];M=[];LINKS={};BLOCKED=new Set();NOTES=[];CONVOS=null;state.me=null;state.loaded=false;state.status={is_admin:false,banned:false};state.unreadN=0;state.unreadDM=0;state.unreadChat=0;UNREAD={};REACT={};FOUNDERS=new Set();BANS={};MYBANS=new Set();state.openReports=0;live.chatId=null;live.threadId=null;cache.chat={};cache.dm={};ADMIN.loaded=false;}
+function clearData(){FRIENDS=[];PUSH.synced=false;PEOPLE={};I=[];M=[];LINKS={};BLOCKED=new Set();NOTES=[];CONVOS=null;state.me=null;state.loaded=false;state.status={is_admin:false,banned:false};state.unreadN=0;state.unreadDM=0;state.unreadChat=0;UNREAD={};REACT={};FOUNDERS=new Set();BANS={};MYBANS=new Set();state.openReports=0;live.chatId=null;live.threadId=null;cache.chat={};cache.dm={};ADMIN.loaded=false;}
 
 /* ---------- загрузка данных ---------- */
 let loadSeq=0;
@@ -109,7 +112,7 @@ async function reload(){
   const seq=++loadSeq;
   const since=new Date(Date.now()-3*3600*1000).toISOString();
   const res=await Promise.all([
-    sb.from('profiles').select(PCOLS),
+    sb.from('profiles').select(pcols()),
     sb.from('interests').select(V4?INT_COLS+',photo_url,rules':INT_COLS).order('created_at',{ascending:false}),
     sb.from('interest_members').select('interest_id,user_id,notify,joined_at'),
     sb.from('meetups').select('id,interest_id,host_id,title,description,format,city,place,starts_at,age_min,age_max,gender,max_people,created_at').gte('starts_at',since).order('starts_at',{ascending:true}),
@@ -121,11 +124,16 @@ async function reload(){
     sb.from('notifications').select('id,kind,title,body,link,read_at,created_at').order('created_at',{ascending:false}).limit(40),
     sb.rpc('my_status'),
     sb.rpc('chat_unread'),
-    sb.from('interest_bans').select('interest_id,user_id,created_at')
+    sb.from('interest_bans').select('interest_id,user_id,created_at'),
+    sb.from('friendships').select('id,requester_id,addressee_id,status')
   ]);
   if(res[1].error&&V4&&(res[1].error.code==='42703'||/photo_url|rules/.test(res[1].error.message||''))){
     V4=false;
     res[1]=await sb.from('interests').select(INT_COLS).order('created_at',{ascending:false});
+  }
+  if(res[0].error&&HAS_PH&&(res[0].error.code==='42703'||/photos/.test(res[0].error.message||''))){
+    HAS_PH=false;
+    res[0]=await sb.from('profiles').select(PCOLS);
   }
   const bad=res.slice(0,11).find(r=>r.error);
   if(bad)throw bad.error;
@@ -147,6 +155,9 @@ async function reload(){
   const bans={},myb=new Set();
   if(res[12]&&!res[12].error)(res[12].data||[]).forEach(r=>{if(r.user_id===uid)myb.add(r.interest_id);(bans[r.interest_id]=bans[r.interest_id]||[]).push({user:r.user_id,at:r.created_at});});
   BANS=bans;MYBANS=myb;
+  HAS_FR=!!(res[13]&&!res[13].error);
+  FRIENDS=HAS_FR?(res[13].data||[]).map(r=>({id:r.id,from:r.requester_id,to:r.addressee_id,status:r.status})):[];
+  state.frIn=FRIENDS.filter(f=>f.status==='pending'&&f.to===uid).length;
   BLOCKED=new Set(res[8].data.map(r=>r.blocked_id));
   NOTES=res[9].data;
   const st=(res[10].data&&res[10].data[0])||{};
@@ -157,7 +168,7 @@ async function reload(){
   state.unreadN=NOTES.filter(n=>!n.read_at).length;
   state.loaded=true;
 }
-function mkPerson(p){return {id:p.id,name:p.name,age:p.age,city:p.city,g:p.gender,about:p.about||'',photo:safePhoto(p.photo_url),hue:hueOf(p.id),since:p.created_at||''};}
+function mkPerson(p){return {id:p.id,name:p.name,age:p.age,city:p.city,g:p.gender,about:p.about||'',photo:safePhoto(p.photo_url),hue:hueOf(p.id),since:p.created_at||'',photos:HAS_PH?(p.photos||[]).map(safePhoto).filter(Boolean):[]};}
 function applyUnread(res){
   if(!res||res.error)return;
   const m={};(res.data||[]).forEach(r=>{m[r.interest_id]=r.unread;});
@@ -172,7 +183,7 @@ function markSeen(id){
 async function ensurePeople(ids){
   const miss=[...new Set(ids)].filter(id=>id&&!PEOPLE[id]);
   if(!miss.length)return;
-  const r=await sb.from('profiles').select(PCOLS).in('id',miss);
+  const r=await sb.from('profiles').select(pcols()).in('id',miss);
   if(!r.error)r.data.forEach(p=>{PEOPLE[p.id]=mkPerson(p);});
 }
 async function refreshCounts(){
@@ -182,13 +193,15 @@ async function refreshCounts(){
       sb.from('notifications').select('id',{count:'exact',head:true}).is('read_at',null),
       sb.from('direct_messages').select('id',{count:'exact',head:true}).eq('recipient_id',state.me.id).is('read_at',null),
       sb.rpc('my_status'),
-      sb.rpc('chat_unread')
+      sb.rpc('chat_unread'),
+      sb.from('friendships').select('id',{count:'exact',head:true}).eq('addressee_id',state.me.id).eq('status','pending')
     ];
     if(state.status.is_admin)jobs.push(sb.from('reports').select('id',{count:'exact',head:true}).eq('status','open'));
     const r=await Promise.all(jobs);
     if(!r[0].error)state.unreadN=r[0].count||0;
     if(!r[1].error)state.unreadDM=r[1].count||0;
-    if(r[4]&&!r[4].error)state.openReports=r[4].count||0;
+    if(r[4]&&!r[4].error)state.frIn=r[4].count||0;
+    if(r[5]&&!r[5].error)state.openReports=r[5].count||0;
     applyUnread(r[3]);
     const st=!r[2].error&&r[2].data&&r[2].data[0];
     if(st&&(!!st.banned!==state.status.banned||!!st.is_admin!==state.status.is_admin)){
@@ -224,7 +237,7 @@ function cityField(id,label,value,ph){
 }
 function shared(a,b){return I.some(i=>i.members.includes(a)&&i.members.includes(b));}
 function commonWith(id){return I.filter(i=>has(i.members)&&i.members.includes(id));}
-function canDM(id){return !!state.me&&id!==state.me.id&&shared(state.me.id,id)&&!BLOCKED.has(id);}
+function canDM(id){return !!state.me&&id!==state.me.id&&(shared(state.me.id,id)||isFriend(id))&&!BLOCKED.has(id);}
 function catChip(i){return '<span class="chip plain">'+esc(CATS[i.cat]||CATS.other)+'</span>';}
 function fmtChip(i){return '<span class="chip plain">'+esc(FORMATS[i.format]||'')+(i.city&&i.format!=='online'?' · '+esc(i.city):'')+'</span>';}
 
@@ -340,7 +353,7 @@ function vHome(){
     '<text x="100" y="112" text-anchor="middle">Бег</text><text x="320" y="112" text-anchor="middle">Книги</text><text x="210" y="300" text-anchor="middle">Кофе</text>'+
     '<circle class="you" cx="210" cy="168" r="22"/><text class="you-t" x="210" y="173" text-anchor="middle">Вы</text></svg></section>';
   if(!logged||!state.loaded||!state.me){
-    return hero+'<section class="section"><h2 style="margin-bottom:18px">Как устроен сайт</h2><div class="how-grid">'+
+    return hero+installCard(false)+'<section class="section"><h2 style="margin-bottom:18px">Как устроен сайт</h2><div class="how-grid">'+
       how(190,'Свой интерес','Придумайте любой интерес, опишите его и задайте параметры.')+
       how(40,'Присоединяйтесь','Вступайте в интересы, где уже собираются люди, и общайтесь в общем чате.')+
       how(350,'Встречи','Участники интереса назначают встречи онлайн и офлайн. Фильтры по городу, возрасту и полу помогут найти подходящую.')+
@@ -349,7 +362,7 @@ function vHome(){
   const mine=M.filter(m=>has(m.going)).sort((a,b)=>a.when-b.when).slice(0,3);
   const near=M.filter(m=>!has(m.going)&&fitsMe(m)&&(m.format==='online'||m.city===state.me.city)&&m.going.length<m.max).sort((a,b)=>a.when-b.when).slice(0,3);
   const ri=recoInterests(),rp=recoPeople();
-  let html=hero;
+  let html=hero+installCard(false);
   const hasInt=I.some(i=>has(i.members));
   if(!hasInt)html+=welcomeBanner();
   else html+=soonCard()+feedHtml()+inviteCard();
@@ -426,7 +439,7 @@ function chatTab(i){
   if(!has(i.members)&&MYBANS.has(i.id))return '<div class="empty"><p>Создатель интереса закрыл вам доступ в этот чат.</p></div>';
   if(!has(i.members))return '<div class="empty"><p>Общий чат видят и пишут в него только участники интереса.</p><button class="btn primary" type="button" data-act="join-interest" data-id="'+esc(i.id)+'">Вступить в интерес</button></div>';
   return '<div class="chat"><div class="chat-list" id="chat-list" aria-live="polite" aria-label="Сообщения чата">'+(cache.chat[i.id]||'<p class="meta empty-chat">Загружаем…</p>')+'</div>'+
-    '<div class="hints" id="chat-hints"></div><form class="chat-form" id="chat-form" novalidate><label class="sr" for="chat-in">Сообщение</label><textarea id="chat-in" rows="1" maxlength="500" autocomplete="off" placeholder="Напишите сообщение и познакомьтесь"></textarea><button class="btn primary" type="submit">Отправить</button></form>'+
+    '<div class="hints" id="chat-hints"></div><div class="cbar" id="cbar-chat" hidden></div><form class="chat-form" id="chat-form" novalidate><label class="sr" for="chat-in">Сообщение</label><textarea id="chat-in" rows="1" maxlength="500" autocomplete="off" placeholder="Напишите сообщение и познакомьтесь"></textarea><button class="btn primary" type="submit">Отправить</button></form>'+
     '<p class="hint">Новые сообщения появляются сами, каждые несколько секунд. Будьте вежливы: на грубость можно пожаловаться.<span class="desk-only"> Enter отправляет, Shift+Enter переносит строку.</span></p></div>';
 }
 function talksList(i){
@@ -504,7 +517,7 @@ function fillMeetups(){
 function vMessages(){
   const sug=recoPeople().filter(x=>canDM(x.p.id)).slice(0,6);
   return '<div class="vhead"><h1>Сообщения</h1></div><div id="convos">'+(CONVOS?convosHtml():'<p class="meta">Загружаем…</p>')+'</div>'+
-    '<p class="hint" style="margin:14px 0 0">Написать можно человеку, с которым у вас есть общий интерес. Вступайте в интересы, чтобы знакомиться.</p>'+
+    '<p class="hint" style="margin:14px 0 0">Написать можно друзьям и людям, с которыми у вас есть общий интерес. Вступайте в интересы и добавляйте людей в друзья.</p>'+
     (sug.length?'<section class="section"><h2 style="margin-bottom:14px">С кем можно познакомиться</h2><div class="reco">'+sug.map(x=>personCard(x.p,x.common)).join('')+'</div></section>':'');
 }
 async function loadConvos(){
@@ -532,10 +545,14 @@ function vThread(){
   if(!UUID.test(id||'')||!PEOPLE[id]||id===state.me.id)return '<div class="empty"><p>Такого собеседника нет.</p><a class="btn" href="#messages">К сообщениям</a></div>';
   const p=PEOPLE[id];
   const can=canDM(id);
-  const why=BLOCKED.has(id)?'Вы заблокировали этого человека. Разблокировать можно в его профиле.':'Писать можно только тем, с кем у вас есть общий интерес. Вступите в один из его интересов.';
-  return '<a class="back" href="#messages">← Все диалоги</a><div class="thread-head">'+avLink(id,'md')+'<div class="who">'+pLink(id)+'<span class="meta">'+ageText(p.age)+' · '+esc(p.city)+'</span></div></div>'+
+  const why=BLOCKED.has(id)?'Вы заблокировали этого человека. Разблокировать можно в его профиле.':'Писать можно друзьям и тем, с кем у вас есть общий интерес. Вступите в один из его интересов или добавьте человека в друзья.';
+  const blocked=BLOCKED.has(id);
+  return '<a class="back" href="#messages">← Все диалоги</a><div class="thread-head">'+avLink(id,'md')+'<div class="who">'+pLink(id)+'<span class="meta">'+ageText(p.age)+' · '+esc(p.city)+'</span></div>'+
+    '<div class="th-acts">'+(HAS_FR&&!blocked&&frState(id)==='none'?'<button class="lnk" type="button" data-act="fr-add" data-id="'+esc(id)+'">В друзья</button>':'')+
+    (blocked?'<button class="lnk" type="button" data-act="unblock" data-id="'+esc(id)+'">Разблокировать</button>':'<button class="lnk" type="button" data-act="block" data-id="'+esc(id)+'">Заблокировать</button>')+
+    '<button class="lnk" type="button" data-act="report" data-type="user" data-id="'+esc(id)+'">Пожаловаться</button></div></div>'+
     '<div class="dm-list" id="dm-list" aria-live="polite">'+(cache.dm[id]||'<p class="meta empty-chat">Загружаем…</p>')+'</div>'+
-    (can?'<div class="hints" id="dm-hints"></div><form class="chat-form" id="dm-form" novalidate style="margin-top:12px"><label class="sr" for="dm-in">Сообщение</label><textarea id="dm-in" rows="1" maxlength="1000" autocomplete="off" placeholder="Напишите сообщение"></textarea><button class="btn primary" type="submit">Отправить</button></form>'
+    (can?'<div class="hints" id="dm-hints"></div><div class="cbar" id="cbar-dm" hidden></div><form class="chat-form" id="dm-form" novalidate style="margin-top:12px"><label class="sr" for="dm-in">Сообщение</label><textarea id="dm-in" rows="1" maxlength="1000" autocomplete="off" placeholder="Напишите сообщение"></textarea><button class="btn primary" type="submit">Отправить</button></form>'
       :'<div class="notice" style="margin-top:12px"><p>'+why+'</p></div>');
 }
 async function openThread(id){
@@ -546,9 +563,10 @@ async function openThread(id){
 async function pollThread(force){
   const o=live.threadId,me=state.me&&state.me.id;
   if(!o||!me||!$('#dm-list'))return;
-  const r=await sb.from('direct_messages').select('id,sender_id,recipient_id,body,created_at,read_at')
+  const r=await sb.from('direct_messages').select(msgCols('dm'))
     .or('and(sender_id.eq.'+me+',recipient_id.eq.'+o+'),and(sender_id.eq.'+o+',recipient_id.eq.'+me+')')
     .order('created_at',{ascending:false}).limit(100);
+  if(r.error&&HAS_RE&&(r.error.code==='42703'||/reply_to|edited_at/.test(r.error.message||''))){HAS_RE=false;return pollThread(true);}
   if(r.error||o!==live.threadId||!$('#dm-list'))return;
   const msgs=r.data.slice().reverse();
   let rx=[];
@@ -558,25 +576,26 @@ async function pollThread(force){
     else rx=rr.data||[];
     if(o!==live.threadId||!$('#dm-list'))return;
   }
-  const sig=msgs.map(m=>m.id+(m.read_at?'r':'')).join(',')+'|'+rx.map(x=>x.message_id+x.user_id+x.reaction).sort().join(',');
+  const sig=msgs.map(m=>m.id+(m.read_at?'r':'')+(m.edited_at||'')).join(',')+'|'+rx.map(x=>x.message_id+x.user_id+x.reaction).sort().join(',');
   if(msgs.some(m=>m.recipient_id===me&&!m.read_at)){
     if(CONVOS){const c=CONVOS.find(x=>x.other===o);if(c)c.unread=0;}
     sb.from('direct_messages').update({read_at:new Date().toISOString()}).eq('recipient_id',me).eq('sender_id',o).is('read_at',null).then(()=>refreshCounts());
   }
   if(sig===live.threadSig&&!force)return;
   live.threadSig=sig;
-  msgs.forEach(m=>{MSG[m.id]={text:m.body,author:m.sender_id};delete REACT[m.id];});
+  msgs.forEach(m=>{MSG[m.id]={text:m.body,author:m.sender_id,dm:true};delete REACT[m.id];});
   rx.forEach(x=>{const o2=REACT[x.message_id]=REACT[x.message_id]||{};(o2[x.reaction]=o2[x.reaction]||[]).push(x.user_id);});
   const box=$('#dm-list');const near=box.scrollHeight-box.scrollTop-box.clientHeight<80;
   const openPk=pickersOpen(box);
   box.innerHTML=msgs.length?msgs.map(m=>{
     const mine=m.sender_id===me;
-    return '<div class="dm'+(mine?' mine':'')+'"><div class="bub">'+esc(m.body)+'</div>'+reactsHtml(m.id,'dm')+'<div class="meta"><span>'+esc(clock(m.created_at))+(mine&&m.read_at?' · прочитано':'')+'</span>'+
-      (mine?'<button class="lnk danger" type="button" data-act="del-dm" data-id="'+esc(m.id)+'">Удалить</button>':'<button class="lnk" type="button" data-act="report" data-type="dm" data-id="'+esc(m.id)+'">Пожаловаться</button>')+'</div></div>';
+    return '<div class="dm'+(mine?' mine':'')+'" data-mid="'+esc(m.id)+'"><div class="bub">'+(m.reply_to?quoteHtml(m.reply_to):'')+'<span class="bt">'+esc(m.body)+'</span>'+(m.edited_at?' <span class="edt">изменено</span>':'')+'</div>'+reactsHtml(m.id,'dm')+'<div class="meta"><span>'+esc(clock(m.created_at))+(mine&&m.read_at?' · прочитано':'')+'</span>'+
+      msgActs('dm',m,mine,mine?'<button class="lnk danger" type="button" data-act="del-dm" data-id="'+esc(m.id)+'">Удалить</button>':'')+'</div></div>';
   }).join(''):'<p class="meta empty-chat">Сообщений пока нет. Поздоровайтесь.</p>';
   cache.dm[o]=box.innerHTML;
   pickersRestore(box,openPk);
   const dh=$('#dm-hints');if(dh)dh.innerHTML=msgs.length?'':dmHints(o);
+  updBar('dm');
   if(near||force)box.scrollTop=box.scrollHeight;
 }
 
@@ -585,7 +604,8 @@ async function openChat(id){live.chatId=id;live.chatSig='';await pollChat(true);
 async function pollChat(force){
   const id=live.chatId;
   if(!id||!$('#chat-list'))return;
-  const r=await sb.from('chat_messages').select('id,author_id,body,created_at').eq('interest_id',id).order('created_at',{ascending:false}).limit(100);
+  const r=await sb.from('chat_messages').select(msgCols('chat')).eq('interest_id',id).order('created_at',{ascending:false}).limit(100);
+  if(r.error&&HAS_RE&&(r.error.code==='42703'||/reply_to|edited_at/.test(r.error.message||''))){HAS_RE=false;return pollChat(true);}
   if(r.error||id!==live.chatId||!$('#chat-list'))return;
   const msgs=r.data.slice().reverse();
   await ensurePeople(msgs.map(m=>m.author_id));
@@ -598,7 +618,7 @@ async function pollChat(force){
     if(id!==live.chatId||!$('#chat-list'))return;
     await ensurePeople(rx.map(r=>r.user_id));
   }
-  const sig=vis.map(m=>m.id).join(',')+'|'+rx.map(r=>r.message_id+r.user_id+r.reaction).sort().join(',');
+  const sig=vis.map(m=>m.id+(m.edited_at||'')).join(',')+'|'+rx.map(r=>r.message_id+r.user_id+r.reaction).sort().join(',');
   if(sig===live.chatSig&&!force)return;
   live.chatSig=sig;
   REACT={};rx.forEach(r=>{const o=REACT[r.message_id]=REACT[r.message_id]||{};(o[r.reaction]=o[r.reaction]||[]).push(r.user_id);});
@@ -608,14 +628,15 @@ async function pollChat(force){
   box.innerHTML=vis.length?vis.map(m=>{
     const mine=isMe(m.author_id);
     const modDel=state.status.is_admin||ownerMod(interest(id));
-    return '<div class="msg'+(mine?' mine':'')+'">'+avLink(m.author_id,'sm')+'<div class="bub"><p class="mh">'+pLink(m.author_id)+'<span class="meta">'+esc(ago(m.created_at))+'</span></p><p class="mt">'+esc(m.body)+'</p>'+reactsHtml(m.id)+
-      '<p class="macts">'+((mine||modDel)?'<button class="lnk danger" type="button" data-act="del-chat" data-id="'+esc(m.id)+'">Удалить</button>':'')+(!mine?'<button class="lnk" type="button" data-act="report" data-type="chat" data-id="'+esc(m.id)+'">Пожаловаться</button>':'')+'</p></div></div>';
+    return '<div class="msg'+(mine?' mine':'')+'" data-mid="'+esc(m.id)+'">'+avLink(m.author_id,'sm')+'<div class="bub"><p class="mh">'+pLink(m.author_id)+'<span class="meta">'+esc(ago(m.created_at))+'</span></p>'+(m.reply_to?quoteHtml(m.reply_to):'')+'<p class="mt">'+esc(m.body)+(m.edited_at?' <span class="edt">изменено</span>':'')+'</p>'+reactsHtml(m.id)+
+      '<p class="macts">'+msgActs('chat',m,mine,((mine||modDel)?'<button class="lnk danger" type="button" data-act="del-chat" data-id="'+esc(m.id)+'">Удалить</button>':'')+(!mine?'<button class="lnk" type="button" data-act="report" data-type="chat" data-id="'+esc(m.id)+'">Пожаловаться</button>':''))+'</p></div></div>';
   }).join(''):'<p class="meta empty-chat">Пока тишина. Напишите первое сообщение.</p>';
   cache.chat[id]=box.innerHTML;
   pickersRestore(box,openPk);
   const ch=$('#chat-hints');
   const last=vis.length?new Date(vis[vis.length-1].created_at).getTime():0;
   if(ch)ch.innerHTML=(vis.length<4||Date.now()-last>24*3600e3)?chatHints(id):'';
+  updBar('chat');
   if(near||force)box.scrollTop=box.scrollHeight;
   markSeen(id);
 }
@@ -675,7 +696,7 @@ async function shareIt(text,h){
 }
 function openLink(link){
   const parts=String(link||'').split('|'),h=parts[0],tab=parts[1];
-  if(!h)return;
+  if(!h||!/^[A-Za-z0-9_\-\/]+$/.test(h)||(tab&&!/^[a-z]+$/.test(tab)))return;
   if(tab){state.pendingTab=tab;if(h==='interest-'+state.arg)state.tab=tab;}
   go(h);
 }
@@ -746,10 +767,18 @@ function vUser(){
   const their=I.filter(i=>i.members.includes(id));
   const going=M.filter(m=>m.going.includes(id)).sort((a,b)=>a.when-b.when).slice(0,3);
   const blocked=BLOCKED.has(id);
+  const urls=photoUrls(p);
+  const fs=HAS_FR&&!blocked?frState(id):'';
+  const frBtns=!HAS_FR||blocked?'':(fs==='none'?'<button class="btn" type="button" data-act="fr-add" data-id="'+esc(id)+'">Добавить в друзья</button>':
+    fs==='out'?'<span class="chip plain">Заявка отправлена</span><button class="btn sm" type="button" data-act="fr-cancel" data-id="'+esc(id)+'">Отменить заявку</button>':
+    fs==='in'?'<button class="btn primary" type="button" data-act="fr-accept" data-id="'+esc(id)+'">Принять заявку</button><button class="btn sm" type="button" data-act="fr-decline" data-id="'+esc(id)+'">Отклонить</button>':
+    '<span class="chip founder">Вы друзья</span><button class="btn sm" type="button" data-act="fr-remove" data-id="'+esc(id)+'">Удалить из друзей</button>');
+  const ava=urls.length?'<button type="button" class="avbtn" data-act="lightbox" data-id="'+esc(id)+'" data-i="0" aria-label="Открыть фото">'+av(p,'lg')+'</button>':av(p,'lg');
   return '<a class="back" href="javascript:history.back()" data-act="back">← Назад</a>'+
-    '<div class="upage">'+av(p,'lg')+'<div><h1>'+esc(p.name)+'</h1><p class="meta">'+ageText(p.age)+' · '+esc(p.city)+' · '+(p.g==='f'?'женщина':'мужчина')+'</p>'+foundBadge(id)+
+    '<div class="upage">'+ava+'<div><h1>'+esc(p.name)+'</h1><p class="meta">'+ageText(p.age)+' · '+esc(p.city)+' · '+(p.g==='f'?'женщина':'мужчина')+'</p>'+foundBadge(id)+
     (p.about?'<p class="about">'+esc(p.about)+'</p>':'')+
-    '<div class="row">'+(canDM(id)?'<a class="btn primary" href="#messages-'+esc(id)+'">Написать</a>':(!blocked?'<span class="meta">Написать можно, когда появится общий интерес.</span>':''))+
+    (urls.length>1?'<div class="gal-row">'+urls.map((u,k)=>'<button type="button" class="gth" data-act="lightbox" data-id="'+esc(id)+'" data-i="'+k+'" aria-label="Фото '+(k+1)+'"><img src="'+esc(u)+'" alt=""></button>').join('')+'</div>':'')+
+    '<div class="row">'+(canDM(id)?'<a class="btn primary" href="#messages-'+esc(id)+'">Написать</a>':(!blocked?'<span class="meta">Написать можно друзьям и людям с общим интересом.</span>':''))+frBtns+
     (blocked?'<button class="btn" type="button" data-act="unblock" data-id="'+esc(id)+'">Разблокировать</button>':'<button class="btn" type="button" data-act="block" data-id="'+esc(id)+'">Заблокировать</button>')+
     '<button class="btn" type="button" data-act="report" data-type="user" data-id="'+esc(id)+'">Пожаловаться</button></div>'+
     (state.status.is_admin?'<div class="row"><button class="btn warn sm" type="button" data-act="adm-ban" data-id="'+esc(id)+'">Ограничить</button><button class="btn sm" type="button" data-act="adm-unban" data-id="'+esc(id)+'">Снять ограничение</button></div>':'')+'</div></div>'+
@@ -760,8 +789,8 @@ function vUser(){
 
 /* ---------- уведомления ---------- */
 function vNotes(){
-  return '<div class="vhead"><h1>Уведомления</h1><button class="btn sm" type="button" data-act="read-all">Отметить все прочитанными</button></div><div id="notes"></div>'+
-    '<p class="hint" style="margin-top:14px">Уведомления о новых встречах можно выключить внутри каждого интереса. Письма и сообщения в мессенджеры пока не отправляются: уведомления видны здесь, на сайте.</p>';
+  return '<div class="vhead"><h1>Уведомления</h1><button class="btn sm" type="button" data-act="read-all">Отметить все прочитанными</button></div>'+pushCard()+'<div id="notes"></div>'+
+    '<p class="hint" style="margin-top:14px">Уведомления о новых встречах можно выключить внутри каждого интереса. Письма не отправляются: уведомления видны здесь, а на телефон приходят, если включить их выше.</p>';
 }
 function fillNotes(){
   const box=$('#notes');if(!box)return;
@@ -807,13 +836,15 @@ function vProfile(){
   const blocked=[...BLOCKED].filter(id=>PEOPLE[id]);
   return '<div class="pro"><span id="avatar-box">'+av(me,'lg')+'</span><div><h1>'+esc(me.name)+'</h1><p class="meta">'+ageText(me.age)+' · '+esc(me.city)+' · '+(me.g==='f'?'женщина':'мужчина')+'</p>'+foundBadge(me.id)+
     (me.about?'<p style="max-width:60ch;white-space:pre-wrap;overflow-wrap:anywhere">'+esc(me.about)+'</p>':'')+
-    '<div class="row" style="margin-top:6px"><button class="btn sm" type="button" data-act="edit-profile">Редактировать</button><label class="btn sm pickbtn">Сменить фото<input class="sr" type="file" id="photo-change" accept="image/*"></label>'+
+    '<div class="row" style="margin-top:6px"><button class="btn sm" type="button" data-act="edit-profile">Редактировать</button>'+
+    '<a class="btn sm" href="#friends">Друзья'+(state.frIn?'<span class="count">'+state.frIn+'</span>':'')+'</a>'+
     '<button class="btn sm" type="button" data-act="share-site">Позвать друзей</button>'+
     (state.status.is_admin?'<a class="btn sm" href="#admin">Модерация'+(state.openReports?'<span class="count">'+state.openReports+'</span>':'')+'</a>':'')+'</div></div></div>'+
-    '<section><h2 style="margin-bottom:14px">Мои интересы</h2>'+(mine.length?'<div class="chips">'+mine.map(i=>'<a class="chip tint" style="--h:'+esc(i.hue)+';font-size:.95rem;padding:.35em .9em" href="#interest-'+esc(i.id)+'">'+esc(i.title)+'</a>').join('')+'</div>':'<div class="empty"><p>Вы пока не вступили ни в один интерес.</p><a class="btn primary" href="#interests">Найти интерес</a></div>')+'</section>'+
+    galleryHtml()+
+    '<section class="section"><h2 style="margin-bottom:14px">Мои интересы</h2>'+(mine.length?'<div class="chips">'+mine.map(i=>'<a class="chip tint" style="--h:'+esc(i.hue)+';font-size:.95rem;padding:.35em .9em" href="#interest-'+esc(i.id)+'">'+esc(i.title)+'</a>').join('')+'</div>':'<div class="empty"><p>Вы пока не вступили ни в один интерес.</p><a class="btn primary" href="#interests">Найти интерес</a></div>')+'</section>'+
     '<section class="section"><h2 style="margin-bottom:14px">Мои встречи</h2>'+(mymeets.length?'<div class="mlist">'+mymeets.map(cardMeetup).join('')+'</div>':'<div class="empty"><p>Вы пока никуда не записаны.</p><a class="btn primary" href="#meetups">Найти встречу</a></div>')+'</section>'+
     (blocked.length?'<section class="section"><h2 style="margin-bottom:14px">Заблокированные</h2><div class="blist">'+blocked.map(id=>'<div class="brow"><span>'+esc(who(id).name)+'</span><button class="btn sm" type="button" data-act="unblock" data-id="'+esc(id)+'">Разблокировать</button></div>').join('')+'</div></section>':'')+
-    '<section class="section"><details class="more"><summary>Установить сайт на телефон</summary><p>Откройте сайт в браузере телефона, нажмите меню браузера (в Chrome это три точки, в Safari кнопка «Поделиться») и выберите «Добавить на главный экран». Значок «Кружка» появится рядом с другими приложениями.</p>'+(state.installEvt?'<button class="btn sm" type="button" data-act="install">Установить</button>':'')+'</details></section>'+
+    '<section class="section"><h2 style="margin-bottom:14px">Телефон и уведомления</h2>'+installCard(true)+pushCard()+'</section>'+
     '<section class="section"><div class="row"><button class="btn warn" type="button" data-act="logout">Выйти</button><button class="btn warn" type="button" data-act="del-account">Удалить профиль</button></div></section>';
 }
 
@@ -867,8 +898,8 @@ function fillAdmin(){
 /* ---------- отрисовка ---------- */
 function renderTop(){
   const cur=state.view==='interest'?'interests':(state.view==='thread'?'messages':state.view);
-  const items=[['home','Главная'],['interests','Интересы'],['meetups','Встречи'],['messages','Сообщения'],['profile','Профиль']];
-  $('#nav').innerHTML=items.map(it=>'<a href="#'+it[0]+'"'+(it[0]===cur?' aria-current="page"':'')+'>'+it[1]+(it[0]==='messages'&&state.unreadDM?'<span class="count">'+state.unreadDM+'</span>':'')+(it[0]==='interests'&&state.unreadChat?'<span class="count">'+state.unreadChat+'</span>':'')+'</a>').join('');
+  const items=[['home','Главная'],['interests','Интересы'],['meetups','Встречи'],['messages','Сообщения'],['friends','Друзья'],['profile','Профиль']];
+  $('#nav').innerHTML=items.map(it=>'<a href="#'+it[0]+'"'+(it[0]===cur?' aria-current="page"':'')+'>'+it[1]+(it[0]==='messages'&&state.unreadDM?'<span class="count">'+state.unreadDM+'</span>':'')+(it[0]==='interests'&&state.unreadChat?'<span class="count">'+state.unreadChat+'</span>':'')+(it[0]==='friends'&&state.frIn?'<span class="count">'+state.frIn+'</span>':'')+'</a>').join('');
   if(state.session&&state.me){
     $('#acct').innerHTML='<a class="bell" href="#notifications" aria-label="Уведомления'+(state.unreadN?': '+state.unreadN+' новых':'')+'"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.9 1.9 0 0 0 3.4 0"/></svg>'+(state.unreadN?'<span class="count">'+(state.unreadN>99?'99+':state.unreadN)+'</span>':'')+'</a>'+
       '<a class="me" href="#profile">'+av(state.me,'sm')+'<span class="nm">'+esc(state.me.name.split(' ')[0])+'</span></a>';
@@ -885,7 +916,7 @@ function render(){
   else if(!state.session)html=vGate(v);
   else if(!state.loaded)html=state.loadError?vLoadError():vLoading();
   else if(!state.me)html=vNoProfile();
-  else html=({interests:vInterests,interest:vInterest,meetups:vMeetups,messages:vMessages,thread:vThread,user:vUser,notifications:vNotes,profile:vProfile,admin:vAdmin,welcome:vWelcome}[v]||vHome)();
+  else html=({interests:vInterests,interest:vInterest,meetups:vMeetups,messages:vMessages,thread:vThread,user:vUser,friends:vFriends,notifications:vNotes,profile:vProfile,admin:vAdmin,welcome:vWelcome}[v]||vHome)();
   $('#view').innerHTML=(ready&&state.status.banned?bannedBanner():'')+html;
   afterRender();
   growAll($('#view'));
@@ -899,9 +930,11 @@ function afterRender(){
   if(v==='thread')openThread(state.arg);else live.threadId=null;
   if(v==='messages')loadConvos();
   if(v==='notifications'){fillNotes();loadNotes();}
+  if(v==='interest'||v==='thread')updBar(v==='thread'?'dm':'chat');
+  if(v==='notifications'||v==='profile')fillPush();
   if(v==='admin'){if(ADMIN.loaded)fillAdmin();loadAdmin();}
 }
-const KEEP=/^(q|f-age|chat-in|dm-in|c-text)$/;
+const KEEP=/^(q|f-age|chat-in|dm-in|c-text|fr-q)$/;
 function renderKeep(){
   const a=document.activeElement,id=a&&a.id;
   const s=a&&a.selectionStart,e=a&&a.selectionEnd;
@@ -920,19 +953,19 @@ async function route(){
   if((m=h.match(/^interest-([^\/]+)(?:\/(chat|talks|meets|people))?$/))){v='interest';arg=m[1];hashTab=m[2]||null;}
   else if((m=h.match(/^user-(.+)$/))){v='user';arg=m[1];}
   else if((m=h.match(/^messages-(.+)$/))){v='thread';arg=m[1];}
-  else if(['home','welcome','interests','meetups','messages','notifications','profile','admin'].indexOf(h)>=0)v=h;
+  else if(['home','welcome','interests','meetups','messages','friends','notifications','profile','admin'].indexOf(h)>=0)v=h;
   const key=v+':'+arg;
   if(hashTab){if(key!==lastKey)state.pendingTab=hashTab;else state.tab=hashTab;}
-  if(key!==lastKey){state.tab=state.pendingTab||null;state.pendingTab=null;state.topic=null;lastKey=key;live.chatId=null;live.threadId=null;}
+  if(key!==lastKey){state.tab=state.pendingTab||null;state.pendingTab=null;state.topic=null;lastKey=key;live.chatId=null;live.threadId=null;COMPOSE.chat={};COMPOSE.dm={};}
   state.view=v;state.arg=arg;
   if(v!=='home'&&v!=='profile'&&!state.session)state.after=h;
-  closeModal();
+  closeModal();closeCrop();
   render();
   window.scrollTo(0,0);
   if(SB_OK&&state.session)await refresh();
 }
 async function refresh(){
-  try{await reload();state.loadError='';}catch(e){state.loadError=errText(e);}
+  try{await reload();state.loadError='';if(!PUSH.synced){PUSH.synced=true;pushSync();}}catch(e){state.loadError=errText(e);}
   renderKeep();
   refreshCounts();
 }
@@ -1058,6 +1091,7 @@ async function toggleMeetup(id){
   await afterChange();
 }
 async function logout(){
+  await pushForget();
   await sb.auth.signOut({scope:'local'});
   state.session=null;clearData();state.notice='';
   toast('Вы вышли из аккаунта.');
@@ -1078,7 +1112,7 @@ function tagsFrom(s){
 function niPhotoBox(){
   const b=$('#ni-photobox');if(!b)return;
   const p=state.niPhoto||{},has=!!p.url;
-  b.innerHTML='<div class="photo-pick"><span id="ni-prev"></span><div class="pp-btns"><label class="btn sm pickbtn">'+(has?'Заменить картинку':'Выбрать картинку')+'<input class="sr" type="file" id="ni-photo" accept="image/*"></label>'+(has?'<button class="lnk danger" type="button" data-act="ni-photo-clear">Убрать</button>':'')+'</div></div><p class="hint">Лучше всего подходит квадратная картинка. Без неё будет цветная буква.</p>';
+  b.innerHTML='<div class="photo-pick"><span id="ni-prev"></span><div class="pp-btns"><label class="btn sm pickbtn">'+(has?'Заменить картинку':'Выбрать картинку')+'<input class="sr" type="file" id="ni-photo" accept="image/*"></label>'+(has?'<button class="btn sm" type="button" data-act="ni-photo-edit">Изменить кадр</button><button class="lnk danger" type="button" data-act="ni-photo-clear">Убрать</button>':'')+'</div></div><p class="hint">Перед загрузкой можно выбрать, какая часть картинки попадёт в кружок. Без картинки будет цветная буква.</p>';
   niPrevRefresh();
 }
 function niPrevRefresh(){
@@ -1170,7 +1204,7 @@ const reportCtx={};
 function openReport(type,id){
   if(needUser())return;
   let uid=null,snap='';
-  if(type==='user'){uid=id;snap=who(id).name+(PEOPLE[id]&&PEOPLE[id].about?': '+PEOPLE[id].about:'');}
+  if(type==='user'){uid=id;snap=who(id).name+(PEOPLE[id]&&PEOPLE[id].about?': '+PEOPLE[id].about:'');if(state.view==='thread'&&state.arg===id){const last=Object.values(MSG).filter(m=>m.dm&&m.author===id).slice(-3).map(m=>m.text);if(last.length)snap=who(id).name+': '+last.join(' / ');}}
   else if(type==='chat'||type==='dm'){const m=MSG[id];if(m){uid=m.author;snap=m.text;}}
   else if(type==='topic'){I.forEach(i=>i.topics.forEach(t=>{if(t.id===id){uid=t.a;snap=t.title+(t.text?'\n'+t.text:'');}}));}
   else if(type==='comment'){I.forEach(i=>i.topics.forEach(t=>t.comments.forEach(c=>{if(c.id===id){uid=c.a;snap=c.t;}})));}
@@ -1203,7 +1237,7 @@ function resizeImage(file,max){
 }
 async function uploadImage(file){
   const uid=state.session.user.id;
-  const blob=await resizeImage(file,512);
+  const blob=file._crop?file:await resizeImage(file,512);
   const path=uid+'/'+Date.now()+'-'+Math.random().toString(36).slice(2,7)+'.jpg';
   const up=await sb.storage.from('avatars').upload(path,blob,{contentType:'image/jpeg',cacheControl:'3600'});
   if(up.error)throw up.error;
@@ -1223,6 +1257,311 @@ async function uploadAvatar(file){
   removeStored(old);
 }
 
+/* ---------- ответы и правка сообщений ---------- */
+const snip=(s,n)=>{s=String(s||'').replace(/\s+/g,' ').trim();n=n||70;return s.length>n?s.slice(0,n)+'…':s;};
+function msgCols(kind){
+  const b=kind==='dm'?'id,sender_id,recipient_id,body,created_at,read_at':'id,author_id,body,created_at';
+  return HAS_RE?b+',reply_to,edited_at':b;
+}
+function quoteHtml(rid){
+  const q=MSG[rid];
+  if(!q)return '<div class="quote gone"><span>Сообщение удалено или скрыто</span></div>';
+  return '<button type="button" class="quote" data-act="jump" data-id="'+esc(rid)+'"><b>'+esc(who(q.author).name)+'</b><span>'+esc(snip(q.text))+'</span></button>';
+}
+function updBar(kind){
+  const b=$('#cbar-'+kind);if(!b)return;
+  const c=COMPOSE[kind]||{},id=c.edit||c.reply;
+  if(!id){b.innerHTML='';b.hidden=true;return;}
+  const m=MSG[id];
+  b.hidden=false;
+  b.innerHTML='<div class="cq"><b>'+(c.edit?'Изменение сообщения':'Ответ: '+esc(who(m&&m.author).name))+'</b><span>'+esc(snip(m?m.text:'Сообщение',90))+'</span></div><button type="button" class="lnk" data-act="cancel-compose" data-kind="'+kind+'">Отмена</button>';
+}
+function msgInput(kind){return $(kind==='dm'?'#dm-in':'#chat-in');}
+async function submitMsg(kind){
+  const dm=kind==='dm',inp=msgInput(kind),txt=inp.value.trim();
+  if(!txt)return;
+  const tbl=dm?'direct_messages':'chat_messages',c=COMPOSE[kind]||{};
+  if(c.edit){
+    const old=MSG[c.edit];
+    if(!old||old.text!==txt){
+      const r=await sb.from(tbl).update({body:txt}).eq('id',c.edit);
+      if(r.error)throw r.error;
+      toast('Сообщение изменено.');
+    }
+  }else{
+    let row;
+    if(dm){const o=state.arg;if(!UUID.test(o||''))return;row={sender_id:state.me.id,recipient_id:o,body:txt};}
+    else{const i=interest(state.arg);if(!i)return;row={interest_id:i.id,author_id:state.me.id,body:txt};}
+    if(c.reply&&HAS_RE)row.reply_to=c.reply;
+    const r=await sb.from(tbl).insert(row);
+    if(r.error)throw r.error;
+  }
+  COMPOSE[kind]={};updBar(kind);
+  inp.value='';grow(inp);
+  await (dm?pollThread(true):pollChat(true));
+}
+const sendChat=()=>submitMsg('chat');
+const sendDM=()=>submitMsg('dm');
+function msgActs(kind,m,mine,extra){
+  if(!HAS_RE)return extra||'';
+  return '<button class="lnk" type="button" data-act="reply" data-kind="'+kind+'" data-id="'+esc(m.id)+'">Ответить</button>'+
+    (mine&&!m._noedit?'<button class="lnk" type="button" data-act="edit-msg" data-kind="'+kind+'" data-id="'+esc(m.id)+'">Изменить</button>':'')+(extra||'');
+}
+
+/* ---------- редактор фото: выбрать, какая часть попадёт в кружок ---------- */
+const CROP={base:null,cx:0,cy:0,z:1,S:280,done:null,drag:null};
+function loadImg(src,cors){
+  return new Promise((res,rej)=>{
+    const im=new Image();if(cors)im.crossOrigin='anonymous';
+    im.onload=()=>res(im);im.onerror=()=>rej(new Error('Не удалось открыть изображение.'));im.src=src;
+  });
+}
+function toBase(im){
+  const iw=im.naturalWidth||im.width,ih=im.naturalHeight||im.height;
+  const k=Math.min(1,1600/Math.max(iw,ih));
+  const c=document.createElement('canvas');c.width=Math.max(1,Math.round(iw*k));c.height=Math.max(1,Math.round(ih*k));
+  c.getContext('2d').drawImage(im,0,0,c.width,c.height);
+  return c;
+}
+function cropGeom(){
+  const b=CROP.base,S=CROP.S;
+  const sc=Math.max(S/b.width,S/b.height)*CROP.z,half=S/(2*sc);
+  CROP.cx=Math.min(Math.max(CROP.cx,half),b.width-half);
+  CROP.cy=Math.min(Math.max(CROP.cy,half),b.height-half);
+  return {sc,half};
+}
+function cropDraw(){
+  const cv=$('#crop-cv');if(!cv||!CROP.base)return;
+  const g=cropGeom(),c=cv.getContext('2d');
+  c.fillStyle='#fff';c.fillRect(0,0,CROP.S,CROP.S);
+  c.drawImage(CROP.base,CROP.cx-g.half,CROP.cy-g.half,2*g.half,2*g.half,0,0,CROP.S,CROP.S);
+}
+function openCropper(im,done){
+  CROP.base=toBase(im);CROP.cx=CROP.base.width/2;CROP.cy=CROP.base.height/2;CROP.z=1;CROP.done=done;CROP.drag=null;
+  $('#mb2').innerHTML='<div class="crop-wrap"><canvas id="crop-cv" width="'+CROP.S+'" height="'+CROP.S+'" aria-label="Область фото. Перетащите, чтобы сдвинуть."></canvas><span class="crop-ring" aria-hidden="true"></span></div>'+
+    '<p class="meta" style="text-align:center">Перетащите фото пальцем или мышкой и подберите масштаб. В кружок попадёт то, что внутри круга.</p>'+
+    '<label class="crop-z"><span>Масштаб</span><input type="range" id="crop-zoom" min="100" max="400" value="100"></label>'+
+    '<div class="row" style="justify-content:center"><button type="button" class="btn sm" data-act="crop-rot">Повернуть</button></div>'+
+    '<div class="row"><button type="button" class="btn primary" data-act="crop-ok">Готово</button><button type="button" class="btn" data-act="crop-cancel">Отмена</button></div>';
+  $('#ov2').hidden=false;
+  cropDraw();
+  const cv=$('#crop-cv');
+  cv.addEventListener('pointerdown',e=>{CROP.drag={x:e.clientX,y:e.clientY,cx:CROP.cx,cy:CROP.cy};try{cv.setPointerCapture(e.pointerId);}catch(x){}});
+  cv.addEventListener('pointermove',e=>{
+    const d=CROP.drag;if(!d)return;
+    const k=CROP.S/cv.getBoundingClientRect().width,g=cropGeom();
+    CROP.cx=d.cx-(e.clientX-d.x)*k/g.sc;CROP.cy=d.cy-(e.clientY-d.y)*k/g.sc;cropDraw();
+  });
+  const end=()=>{CROP.drag=null;};
+  cv.addEventListener('pointerup',end);cv.addEventListener('pointercancel',end);
+  cv.addEventListener('wheel',e=>{e.preventDefault();const z=Math.min(4,Math.max(1,CROP.z*(e.deltaY<0?1.08:1/1.08)));CROP.z=z;const s=$('#crop-zoom');if(s)s.value=Math.round(z*100);cropDraw();},{passive:false});
+  const f=$('#ov2 button.primary');if(f)f.focus();
+}
+function closeCrop(){
+  if($('#ov2').hidden)return;
+  $('#ov2').hidden=true;$('#mb2').innerHTML='';CROP.base=null;CROP.done=null;
+}
+function cropRot(){
+  const b=CROP.base;if(!b)return;
+  const c=document.createElement('canvas');c.width=b.height;c.height=b.width;
+  const x=c.getContext('2d');x.translate(c.width/2,c.height/2);x.rotate(Math.PI/2);x.drawImage(b,-b.width/2,-b.height/2);
+  CROP.base=c;CROP.cx=c.width/2;CROP.cy=c.height/2;CROP.z=1;
+  const s=$('#crop-zoom');if(s)s.value=100;
+  cropDraw();
+}
+function cropOut(){
+  const g=cropGeom(),c=document.createElement('canvas');c.width=c.height=512;
+  const x=c.getContext('2d');x.fillStyle='#fff';x.fillRect(0,0,512,512);
+  x.drawImage(CROP.base,CROP.cx-g.half,CROP.cy-g.half,2*g.half,2*g.half,0,0,512,512);
+  return new Promise((res,rej)=>c.toBlob(b=>{if(!b)return rej(new Error('Не удалось обработать фото.'));b._crop=true;res(b);},'image/jpeg',0.88));
+}
+async function cropFile(file,done){
+  if(!file)return;
+  if(file.size>15*1024*1024){toast('Файл слишком большой. Выберите фото до 15 МБ.');return;}
+  const u=URL.createObjectURL(file);
+  try{openCropper(await loadImg(u),done);}
+  catch(e){toast('Не удалось открыть этот файл как изображение.');}
+  finally{URL.revokeObjectURL(u);}
+}
+async function cropUrl(url,done){
+  try{openCropper(await loadImg(url,true),done);}
+  catch(e){toast('Не удалось открыть фото для правки. Загрузите его заново.');}
+}
+function blobToUrl(blob){return new Promise(res=>{const r=new FileReader();r.onload=()=>res(r.result);r.readAsDataURL(blob);});}
+async function setNiBlob(blob){
+  const url=await blobToUrl(blob);
+  state.niPhoto={file:blob,url,remove:false,orig:(state.niPhoto||{}).orig||null};
+  niPhotoBox();
+}
+
+/* ---------- мои фотографии: основное и до трёх дополнительных ---------- */
+function photoUrls(p){return [p.photo].concat(p.photos||[]).filter(Boolean);}
+async function savePhotos(main,extra,drop){
+  const upd={};
+  if(main!==undefined)upd.photo_url=main;
+  if(extra!==undefined)upd.photos=extra;
+  const r=await sb.from('profiles').update(upd).eq('id',state.me.id);
+  if(r.error)throw r.error;
+  (drop||[]).forEach(removeStored);
+}
+function galleryHtml(){
+  const me=state.me,ex=me.photos||[];
+  const tile=(img,label,acts)=>'<figure class="gi"><span class="gi-img">'+img+'</span><figcaption>'+label+'</figcaption><div class="gi-acts">'+acts+'</div></figure>';
+  const mainImg=me.photo?'<img src="'+esc(me.photo)+'" alt="Основное фото">':'<span class="gi-ph tint" style="--h:'+esc(me.hue)+'">'+esc(me.name.charAt(0))+'</span>';
+  let h=tile(mainImg,'Основное',
+    '<label class="btn sm pickbtn">'+(me.photo?'Заменить':'Добавить фото')+'<input class="sr" type="file" id="photo-change" accept="image/*"></label>'+
+    (me.photo?'<button class="lnk" type="button" data-act="ph-edit" data-id="main">Изменить кадр</button><button class="lnk danger" type="button" data-act="ph-del" data-id="main">Удалить</button>':''));
+  ex.forEach((u,k)=>{h+=tile('<img src="'+esc(u)+'" alt="Дополнительное фото '+(k+1)+'">','Фото '+(k+1),
+    '<button class="lnk" type="button" data-act="ph-main" data-id="'+k+'">Сделать основным</button><button class="lnk" type="button" data-act="ph-edit" data-id="'+k+'">Изменить кадр</button><button class="lnk danger" type="button" data-act="ph-del" data-id="'+k+'">Удалить</button>');});
+  if(HAS_PH&&ex.length<3&&me.photo)h+='<label class="gi add"><span>+</span>Добавить ещё фото<input class="sr" type="file" id="ph-new" accept="image/*"></label>';
+  return '<section class="section"><h2 style="margin-bottom:6px">Мои фото</h2><p class="hint" style="margin:0 0 12px">'+(HAS_PH?'Основное фото и ещё до трёх дополнительных. ':'')+'Перед загрузкой можно выбрать, какая часть фото попадёт в кружок.</p><div class="gal">'+h+'</div></section>';
+}
+let LBX={urls:[],i:0,name:''};
+function lbDraw(first){
+  const L=LBX;
+  const body='<div class="lb"><img src="'+esc(L.urls[L.i])+'" alt="Фото: '+esc(L.name)+'"></div>'+(L.urls.length>1?'<div class="row lb-n"><button class="btn sm" type="button" data-act="lb-prev" aria-label="Предыдущее фото">←</button><span class="meta">'+(L.i+1)+' из '+L.urls.length+'</span><button class="btn sm" type="button" data-act="lb-next" aria-label="Следующее фото">→</button></div>':'');
+  if(first)openModal(L.name,body);else $('#mb').innerHTML=body;
+}
+function lbOpen(pid,i){
+  const p=who(pid),urls=photoUrls(p);
+  if(!urls.length)return;
+  LBX={urls,i:Math.max(0,Math.min(i||0,urls.length-1)),name:p.name};lbDraw(true);
+}
+
+/* ---------- друзья ---------- */
+const frRec=id=>FRIENDS.find(f=>f.from===id||f.to===id);
+function frState(id){
+  const f=frRec(id);
+  if(!f)return 'none';
+  if(f.status==='accepted')return 'friend';
+  return f.from===state.me.id?'out':'in';
+}
+const isFriend=id=>HAS_FR&&!!state.me&&frState(id)==='friend';
+function frActs(id){
+  const s=frState(id),e=esc(id);
+  if(BLOCKED.has(id))return '<button class="btn sm" type="button" data-act="unblock" data-id="'+e+'">Разблокировать</button>';
+  if(s==='none')return '<button class="btn sm primary" type="button" data-act="fr-add" data-id="'+e+'">Добавить в друзья</button>';
+  if(s==='out')return '<span class="meta">Заявка отправлена</span><button class="lnk" type="button" data-act="fr-cancel" data-id="'+e+'">Отменить</button>';
+  if(s==='in')return '<button class="btn sm primary" type="button" data-act="fr-accept" data-id="'+e+'">Принять</button><button class="btn sm" type="button" data-act="fr-decline" data-id="'+e+'">Отклонить</button>';
+  return '<a class="btn sm primary" href="#messages-'+e+'">Написать</a><button class="lnk danger" type="button" data-act="fr-remove" data-id="'+e+'">Удалить из друзей</button>';
+}
+function frRow(id,acts){
+  const p=who(id);
+  return '<div class="frow">'+avLink(id,'md')+'<div class="fr-i">'+pLink(id)+'<span class="meta">'+ageText(p.age)+' · '+esc(p.city)+'</span></div><div class="fr-a">'+(acts==null?frActs(id):acts)+'</div></div>';
+}
+function frFindHtml(){
+  const q=(($('#fr-q')||{}).value||'').trim().toLowerCase();
+  let ids;
+  if(q)ids=Object.keys(PEOPLE).filter(id=>id!==state.me.id&&!BLOCKED.has(id)&&PEOPLE[id].name.toLowerCase().indexOf(q)>=0).slice(0,12);
+  else ids=recoPeople().map(x=>x.p.id).filter(id=>frState(id)==='none'&&!BLOCKED.has(id)).slice(0,6);
+  if(!ids.length)return '<p class="meta">'+(q?'Никого не нашли. Проверьте, как пишется имя.':'Подсказки появятся, когда вы вступите в интересы. Или найдите человека по имени.')+'</p>';
+  return '<div class="flist">'+ids.map(id=>frRow(id)).join('')+'</div>';
+}
+function fillFriendsFind(){const b=$('#fr-find');if(b)b.innerHTML=frFindHtml();}
+function vFriends(){
+  if(!HAS_FR)return '<div class="vhead"><h1>Друзья</h1></div><div class="empty"><p>Раздел появится после обновления базы данных.</p></div>';
+  const me=state.me.id,ok=id=>!!PEOPLE[id];
+  const inc=FRIENDS.filter(f=>f.status==='pending'&&f.to===me&&ok(f.from)).map(f=>f.from);
+  const out=FRIENDS.filter(f=>f.status==='pending'&&f.from===me&&ok(f.to)).map(f=>f.to);
+  const fr=FRIENDS.filter(f=>f.status==='accepted').map(f=>f.from===me?f.to:f.from).filter(ok);
+  const bl=[...BLOCKED].filter(ok);
+  const sec=(t,n,body)=>'<section class="section"><h2 style="margin-bottom:12px">'+t+(n!=null?' <span class="meta">('+n+')</span>':'')+'</h2>'+body+'</section>';
+  return '<div class="vhead"><h1>Друзья</h1></div>'+
+    (inc.length?sec('Заявки в друзья',inc.length,'<div class="flist">'+inc.map(id=>frRow(id)).join('')+'</div>'):'')+
+    sec('Мои друзья',fr.length,fr.length?'<div class="flist">'+fr.map(id=>frRow(id)).join('')+'</div>':'<div class="empty"><p>Друзей пока нет. Найдите человека ниже или откройте чей-нибудь профиль и нажмите «Добавить в друзья».</p></div>')+
+    (out.length?sec('Отправленные заявки',out.length,'<div class="flist">'+out.map(id=>frRow(id)).join('')+'</div>'):'')+
+    sec('Найти человека',null,'<div class="field"><label class="sr" for="fr-q">Имя</label><input type="text" id="fr-q" maxlength="40" placeholder="Начните вводить имя" autocomplete="off"></div><div id="fr-find">'+frFindHtml()+'</div><p class="hint">Друзьям можно писать личные сообщения, даже если у вас нет общего интереса.</p>')+
+    (bl.length?sec('Заблокированные',bl.length,'<div class="flist">'+bl.map(id=>frRow(id)).join('')+'</div><p class="hint">Заблокированный человек не может вам писать и отправлять заявки, а его сообщения скрыты от вас.</p>'):'');
+}
+async function frWrite(p,okMsg){
+  const r=await p;
+  if(r.error)throw r.error;
+  if(okMsg)toast(okMsg);
+  await afterChange();
+}
+
+/* ---------- установка на телефон и уведомления ---------- */
+const VAPID_PUBLIC='BGkMnXUyXM5-Cp3jheRS7XQ2QfirUxwDW91I6EMTktClC9a0xkdaPq70C9NvEbJzYhO4Wnv0QeGK3DCtQ41ct7s';
+const isStandalone=()=>!!((window.matchMedia&&window.matchMedia('(display-mode: standalone)').matches)||navigator.standalone===true);
+function platform(){
+  const ua=navigator.userAgent||'';
+  if(/iPhone|iPad|iPod/.test(ua)||(/Macintosh/.test(ua)&&navigator.maxTouchPoints>1))return 'ios';
+  if(/Android/.test(ua))return 'android';
+  return 'desktop';
+}
+function installSteps(pl){
+  const L={
+    android:['<b>Android, браузер Chrome</b>','Откройте сайт в Chrome.','Нажмите три точки в правом верхнем углу.','Выберите «Установить приложение» (или «Добавить на главный экран») и подтвердите.','Значок «Кружка» появится среди приложений.'],
+    ios:['<b>iPhone и iPad, браузер Safari</b>','Откройте сайт именно в Safari (в Chrome на iPhone установить нельзя).','Нажмите кнопку «Поделиться» (квадрат со стрелкой вверх) внизу экрана.','Прокрутите список вниз и выберите «На экран «Домой»», затем «Добавить».','Запускайте «Кружок» с экрана «Домой»: так он открывается как приложение и присылает уведомления.'],
+    desktop:['<b>Компьютер, браузер Chrome или Edge</b>','Откройте сайт в браузере.','Справа в адресной строке нажмите значок установки (монитор со стрелкой).','Или откройте меню браузера и выберите «Установить Кружок».']
+  }[pl];
+  return '<div class="isteps">'+L[0]+'<ol>'+L.slice(1).map(s=>'<li>'+s+'</li>').join('')+'</ol></div>';
+}
+function installHelp(){
+  const me=platform(),others=['android','ios','desktop'].filter(x=>x!==me);
+  openModal('Установить «Кружок» на телефон',
+    '<p>Так сайт получает свой значок на главном экране, открывается без адресной строки и может присылать уведомления.</p>'+
+    (isStandalone()?'<p class="notice">Вы уже открыли «Кружок» как приложение.</p>':'')+
+    (state.installEvt?'<button class="btn primary" type="button" data-act="install">Установить сразу</button>':'')+
+    installSteps(me)+'<details class="more"><summary>Инструкции для других устройств</summary>'+others.map(installSteps).join('')+'</details>');
+}
+function installCard(always){
+  if(isStandalone())return '';
+  let hidden=false;try{hidden=!always&&localStorage.getItem('kr-inst-hide')==='1';}catch(e){}
+  if(hidden)return '';
+  return '<section class="inst" id="inst-card"><div class="inst-t"><b>Установите «Кружок» на телефон</b><span>Значок на главном экране, как у обычного приложения. Откроется без адресной строки, а ещё придут уведомления о сообщениях и встречах.</span></div><div class="row"><button class="btn primary sm" type="button" data-act="install-help">Как установить</button>'+(state.installEvt?'<button class="btn sm" type="button" data-act="install">Установить сразу</button>':'')+(always?'':'<button class="lnk" type="button" data-act="inst-hide">Скрыть</button>')+'</div></section>';
+}
+const PUSH={sub:false,synced:false};
+const pushCan=()=>('serviceWorker' in navigator)&&('PushManager' in window)&&('Notification' in window);
+function b64u(s){
+  const b=(s+'='.repeat((4-s.length%4)%4)).replace(/-/g,'+').replace(/_/g,'/'),r=atob(b),o=new Uint8Array(r.length);
+  for(let i=0;i<r.length;i++)o[i]=r.charCodeAt(i);
+  return o;
+}
+function pushHtml(){
+  if(!SB_OK||!state.session)return '';
+  const t='<b>Уведомления на телефон</b>';
+  if(!pushCan()){
+    const ios=platform()==='ios';
+    return t+'<p>'+(ios?'На iPhone уведомления работают только после установки: добавьте сайт на экран «Домой» из Safari (нужна iOS 16.4 или новее) и откройте его оттуда.':'Этот браузер не поддерживает уведомления. Попробуйте Chrome.')+'</p>'+(ios&&!isStandalone()?'<button class="btn sm" type="button" data-act="install-help">Как добавить на экран «Домой»</button>':'');
+  }
+  if(Notification.permission==='denied')return t+'<p>Вы запретили уведомления для этого сайта. Разрешите их в настройках браузера (значок замка рядом с адресом, пункт «Уведомления») и обновите страницу.</p>';
+  if(PUSH.sub&&Notification.permission==='granted')return '<b>Уведомления на этом устройстве включены</b><p>Мы сообщим о личных сообщениях, заявках в друзья и новых встречах, даже когда сайт закрыт.</p><button class="btn sm" type="button" data-act="push-off">Выключить</button>';
+  return t+'<p>Сообщим о личных сообщениях, заявках в друзья и новых встречах, даже когда сайт закрыт.</p><button class="btn primary sm" type="button" data-act="push-on">Включить уведомления</button>';
+}
+function pushCard(){return '<section class="push" id="push-box">'+pushHtml()+'</section>';}
+function fillPush(){const b=$('#push-box');if(b)b.innerHTML=pushHtml();}
+async function pushInit(){
+  try{
+    if(!pushCan())return;
+    const reg=await navigator.serviceWorker.ready;
+    const s=await reg.pushManager.getSubscription();
+    PUSH.sub=!!s;fillPush();
+  }catch(e){}
+}
+async function pushSync(){
+  try{
+    if(!pushCan()||Notification.permission!=='granted'||!state.session)return;
+    const reg=await navigator.serviceWorker.ready;
+    const s=await reg.pushManager.getSubscription();
+    if(!s)return;
+    const j=s.toJSON();
+    await sb.rpc('save_push_subscription',{p_endpoint:j.endpoint,p_p256dh:j.keys.p256dh,p_auth:j.keys.auth});
+    PUSH.sub=true;fillPush();
+  }catch(e){}
+}
+async function pushForget(){
+  try{
+    if(!pushCan())return;
+    const reg=await navigator.serviceWorker.ready;
+    const s=await reg.pushManager.getSubscription();
+    if(s)await sb.rpc('delete_push_subscription',{p_endpoint:s.endpoint});
+  }catch(e){}
+}
+function aboutModal(){
+  openModal('О сайте','<p>«Кружок»: знакомства по интересам, пробная версия.</p><p class="meta">Список городов: <a href="https://github.com/hflabs/city" rel="noopener noreferrer" target="_blank">hflabs/city</a> (данные DaData.ru, лицензия CC BY-SA 4.0).</p>');
+}
+
 /* ---------- обработчики ---------- */
 const ACT={
   'open-link':(id,el)=>openLink(el.dataset.link),
@@ -1240,6 +1579,66 @@ const ACT={
   'share-interest':id=>{const i=interest(id);if(i)shareIt('Интерес «'+i.title+'» в «Кружке»: '+(i.desc||'').slice(0,90),'interest-'+i.id);},
   'share-meetup':id=>{const m=M.find(x=>x.id===id);if(m)shareIt('Встреча «'+m.title+'», '+when(m.when)+'. Присоединяйтесь в «Кружке»!','interest-'+m.interestId+'/meets');},
   'install':()=>{const e=state.installEvt;if(!e)return;state.installEvt=null;try{e.prompt();}catch(x){}render();},
+  'jump':id=>{const t=document.querySelector('[data-mid="'+id+'"]');if(!t)return;t.scrollIntoView({block:'center',behavior:'smooth'});t.classList.add('flash');setTimeout(()=>t.classList.remove('flash'),1600);},
+  'reply':(id,el)=>{const k=el.dataset.kind;COMPOSE[k]={reply:id};updBar(k);const inp=msgInput(k);if(inp)inp.focus();},
+  'edit-msg':(id,el)=>{const k=el.dataset.kind,m=MSG[id],inp=msgInput(k);if(!m||!inp)return;COMPOSE[k]={edit:id};inp.value=m.text;grow(inp);updBar(k);inp.focus();try{inp.setSelectionRange(inp.value.length,inp.value.length);}catch(e){}},
+  'cancel-compose':(id,el)=>{const k=el.dataset.kind,c=COMPOSE[k]||{},inp=msgInput(k);if(c.edit&&inp){inp.value='';grow(inp);}COMPOSE[k]={};updBar(k);},
+  'crop-ok':async()=>{const cb=CROP.done;if(!CROP.base||!cb)return;let blob;try{blob=await cropOut();}catch(e){toast('Не удалось обработать фото.');return;}closeCrop();cb(blob);},
+  'crop-cancel':()=>closeCrop(),
+  'crop-rot':()=>cropRot(),
+  'ni-photo-edit':()=>{const p=state.niPhoto||{};if(p.url)cropUrl(p.url,setNiBlob);},
+  'ph-edit':(id)=>{
+    const me=state.me,main=id==='main',k=main?-1:parseInt(id,10),old=main?me.photo:(me.photos||[])[k];
+    if(!old)return;
+    cropUrl(old,blob=>run(async()=>{
+      toast('Сохраняем фото…');
+      const nu=await uploadImage(blob);
+      try{if(main)await savePhotos(nu);else{const a=[...me.photos];a[k]=nu;await savePhotos(undefined,a);}}catch(e){removeStored(nu);throw e;}
+      removeStored(old);await afterChange();toast('Фото обновлено.');
+    }));
+  },
+  'ph-main':id=>run(async()=>{
+    const me=state.me,k=parseInt(id,10),a=[...(me.photos||[])],np=a[k];if(!np)return;
+    if(me.photo)a[k]=me.photo;else a.splice(k,1);
+    await savePhotos(np,a);await afterChange();toast('Основное фото заменено.');
+  }),
+  'ph-del':id=>{
+    const me=state.me,main=id==='main',k=main?-1:parseInt(id,10),old=main?me.photo:(me.photos||[])[k];
+    if(!old)return;
+    confirmModal('Удалить это фото?','Фото будет удалено с вашей страницы.','Удалить',()=>run(async()=>{
+      if(main)await savePhotos(null,undefined,[old]);else{const a=[...me.photos];a.splice(k,1);await savePhotos(undefined,a,[old]);}
+      closeModal();await afterChange();toast('Фото удалено.');
+    }),true);
+  },
+  'lightbox':(id,el)=>lbOpen(id,parseInt(el.dataset.i,10)||0),
+  'lb-prev':()=>{LBX.i=(LBX.i+LBX.urls.length-1)%LBX.urls.length;lbDraw(false);},
+  'lb-next':()=>{LBX.i=(LBX.i+1)%LBX.urls.length;lbDraw(false);},
+  'fr-add':id=>run(()=>frWrite(sb.from('friendships').insert({requester_id:state.me.id,addressee_id:id}),'Заявка отправлена.')),
+  'fr-accept':id=>run(()=>{const f=frRec(id);if(!f)return;return frWrite(sb.from('friendships').update({status:'accepted'}).eq('id',f.id),'Теперь вы друзья.');}),
+  'fr-decline':id=>run(()=>{const f=frRec(id);if(!f)return;return frWrite(sb.from('friendships').delete().eq('id',f.id),'Заявка отклонена.');}),
+  'fr-cancel':id=>run(()=>{const f=frRec(id);if(!f)return;return frWrite(sb.from('friendships').delete().eq('id',f.id),'Заявка отменена.');}),
+  'fr-remove':id=>{const f=frRec(id);if(!f)return;confirmModal('Удалить из друзей?',who(id).name+' перестанет быть вашим другом. Писать друг другу можно, если есть общий интерес.','Удалить',()=>run(async()=>{closeModal();await frWrite(sb.from('friendships').delete().eq('id',f.id),'Удалено из друзей.');}),true);},
+  'install-help':()=>installHelp(),
+  'inst-hide':()=>{try{localStorage.setItem('kr-inst-hide','1');}catch(e){}const c=$('#inst-card');if(c)c.remove();},
+  'about':()=>aboutModal(),
+  'push-on':()=>run(async()=>{
+    if(!pushCan())return;
+    const perm=await Notification.requestPermission();
+    if(perm!=='granted'){fillPush();toast('Уведомления не разрешены.');return;}
+    const reg=await navigator.serviceWorker.ready;
+    let sub=await reg.pushManager.getSubscription();
+    if(!sub)sub=await reg.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:b64u(VAPID_PUBLIC)});
+    const j=sub.toJSON();
+    const r=await sb.rpc('save_push_subscription',{p_endpoint:j.endpoint,p_p256dh:j.keys.p256dh,p_auth:j.keys.auth});
+    if(r.error)throw r.error;
+    PUSH.sub=true;fillPush();toast('Уведомления включены.');
+  }),
+  'push-off':()=>run(async()=>{
+    const reg=await navigator.serviceWorker.ready;
+    const sub=await reg.pushManager.getSubscription();
+    if(sub){await sb.rpc('delete_push_subscription',{p_endpoint:sub.endpoint});await sub.unsubscribe();}
+    PUSH.sub=false;fillPush();toast('Уведомления выключены.');
+  }),
   'join-interest':id=>run(()=>toggleInterest(id)),
   'new-interest':(id,el)=>openInterestForm(null,el&&el.dataset.title),
   'ni-photo-clear':()=>{state.niPhoto={file:null,url:null,remove:true,orig:(state.niPhoto||{}).orig||null};niPhotoBox();},
@@ -1333,6 +1732,9 @@ document.addEventListener('click',e=>{
 document.addEventListener('mousedown',e=>{const li=e.target.closest('.combo-list li');if(li){e.preventDefault();pickCity(li);}});
 document.addEventListener('keydown',e=>{
   if(e.key==='Escape'){
+    if(!$('#ov2').hidden){closeCrop();return;}
+    const cin=e.target&&(e.target.id==='chat-in'?'chat':(e.target.id==='dm-in'?'dm':null));
+    if(cin&&(COMPOSE[cin].reply||COMPOSE[cin].edit)){const c=COMPOSE[cin];if(c.edit){e.target.value='';grow(e.target);}COMPOSE[cin]={};updBar(cin);return;}
     const open=document.querySelector('.combo-list:not([hidden])');
     if(open){const inp=document.querySelector('[data-list="'+open.id+'"]');if(inp)hideCombo(inp);return;}
     if(!$('#ov').hidden)closeModal();
@@ -1361,6 +1763,8 @@ document.addEventListener('input',e=>{
   if(t.tagName==='TEXTAREA')grow(t);
   if(id==='q'){state.q=t.value;fillInterests();}
   else if(id==='f-age'){state.f.age=t.value;fillMeetups();}
+  else if(id==='fr-q')fillFriendsFind();
+  else if(id==='crop-zoom'){CROP.z=(parseInt(t.value,10)||100)/100;cropDraw();}
   else if(id==='ni-title'){showSimilar();niPrevRefresh();}
   else if(t.classList&&t.classList.contains('cityin')){clearTimeout(comboTimer);comboTimer=setTimeout(()=>suggestCities(t),180);}
 });
@@ -1381,24 +1785,27 @@ document.addEventListener('change',e=>{
     run(async()=>{const r=await sb.from('interest_members').update({notify:val}).eq('interest_id',i.id).eq('user_id',state.me.id);if(r.error)throw r.error;i.notify=val;toast('Сохранено: '+NOTIFY[val].toLowerCase()+'.');});
   }
   else if(id==='photo'){
-    const file=t.files&&t.files[0];if(!file)return;
-    state.photoFile=file;
-    const r=new FileReader();
-    r.onload=()=>{state.photoUrl=r.result;const pv=$('#photo-prev');if(pv)pv.innerHTML='<span class="av av-lg"><img src="'+esc(r.result)+'" alt=""></span>';};
-    r.readAsDataURL(file);
+    const file=t.files&&t.files[0];t.value='';
+    cropFile(file,async blob=>{state.photoFile=blob;state.photoUrl=await blobToUrl(blob);const pv=$('#photo-prev');if(pv)pv.innerHTML='<span class="av av-lg"><img src="'+esc(state.photoUrl)+'" alt=""></span>';});
   }
   else if(id==='ni-photo'){
-    const file=t.files&&t.files[0];if(!file)return;
-    if(file.size>15*1024*1024){setErr('Файл слишком большой. Выберите картинку до 15 МБ.');return;}
-    const r=new FileReader();
-    r.onload=()=>{state.niPhoto={file,url:r.result,remove:false,orig:(state.niPhoto||{}).orig||null};niPhotoBox();};
-    r.readAsDataURL(file);
+    const file=t.files&&t.files[0];t.value='';
+    cropFile(file,setNiBlob);
   }
   else if(id==='photo-change'){
-    const file=t.files&&t.files[0];if(!file)return;
-    t.value='';
-    run(async()=>{toast('Загружаем фото…');await uploadAvatar(file);await afterChange();toast('Фото обновлено.');});
+    const file=t.files&&t.files[0];t.value='';
+    cropFile(file,blob=>run(async()=>{toast('Загружаем фото…');await uploadAvatar(blob);await afterChange();toast('Фото обновлено.');}));
   }
+  else if(id==='ph-new'){
+    const file=t.files&&t.files[0];t.value='';
+    cropFile(file,blob=>run(async()=>{
+      toast('Загружаем фото…');
+      const url=await uploadImage(blob),me=state.me;
+      try{await savePhotos(undefined,[...(me.photos||[]),url]);}catch(e){removeStored(url);throw e;}
+      await afterChange();toast('Фото добавлено.');
+    }));
+  }
+
 });
 
 document.addEventListener('submit',e=>{
@@ -1548,22 +1955,6 @@ async function sendReply(){
   if(r.error)throw r.error;
   await afterChange();
 }
-async function sendChat(){
-  const inp=$('#chat-in'),txt=inp.value.trim(),i=interest(state.arg);
-  if(!txt||!i)return;
-  const r=await sb.from('chat_messages').insert({interest_id:i.id,author_id:state.me.id,body:txt});
-  if(r.error)throw r.error;
-  inp.value='';grow(inp);
-  await pollChat(true);
-}
-async function sendDM(){
-  const inp=$('#dm-in'),txt=inp.value.trim(),o=state.arg;
-  if(!txt||!UUID.test(o||''))return;
-  const r=await sb.from('direct_messages').insert({sender_id:state.me.id,recipient_id:o,body:txt});
-  if(r.error)throw r.error;
-  inp.value='';grow(inp);
-  await pollThread(true);
-}
 async function sendReport(){
   const c=reportCtx;
   const r=await sb.from('reports').insert({reporter_id:state.me.id,target_type:c.type,target_id:c.id,target_user_id:c.uid||null,reason:$('#rp-reason').value,details:$('#rp-details').value.trim(),snapshot:c.snap||''});
@@ -1601,7 +1992,12 @@ async function init(){
     });
     setInterval(live_tick,4000);
   }
+  if('serviceWorker' in navigator&&(location.protocol==='https:'||location.hostname==='localhost'||location.hostname==='127.0.0.1')){
+    navigator.serviceWorker.register('sw.js').then(()=>pushInit()).catch(()=>{});
+    navigator.serviceWorker.addEventListener('message',e=>{const d=e.data;if(d&&d.type==='go')openLink(d.link);});
+  }
   route();
+  try{const g=new URLSearchParams(location.search).get('go');if(g){history.replaceState(null,'',location.pathname+location.hash);setTimeout(()=>openLink(g),0);}}catch(e){}
 }
 init();
 })();

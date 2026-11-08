@@ -531,3 +531,4 @@ code{font-family:ui-monospace,Menlo,Consolas,monospace;background:var(--surface-
 .sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
 .rate{color:#e0a100;letter-spacing:2px}
 .rvrow{padding:8px 0;border-top:1px solid var(--line,#ddd)}
+.cfbox{min-height:0;margin:8px 0}

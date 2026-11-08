@@ -841,7 +841,7 @@ function vAuth(){
   if(!su){
     return '<div class="vhead"><h1>Вход</h1></div>'+tabs+notice+
       '<form class="form" id="login" novalidate>'+fld('Почта','li-email','<input type="email" id="li-email" autocomplete="email">')+fld('Пароль','li-pw','<input type="password" id="li-pw" autocomplete="current-password">')+
-      '<p class="err" id="err" role="alert"></p><div><button class="btn primary" type="submit" id="submit-btn">Войти</button></div></form>';
+      '<div id="cf-box" class="cfbox"></div><p class="err" id="err" role="alert"></p><div><button class="btn primary" type="submit" id="submit-btn">Войти</button></div></form>';
   }
   return '<div class="vhead"><h1>Регистрация</h1></div>'+tabs+notice+
     '<form class="form" id="signup" novalidate>'+photoPick()+
@@ -854,7 +854,7 @@ function vAuth(){
     fld('О себе','su-about','<textarea id="su-about" maxlength="300" placeholder="Пара слов о том, чем вы любите заниматься"></textarea>')+
     '<div class="check"><input type="checkbox" id="su-consent"><label for="su-consent">Я согласен(на) на обработку моих данных для работы сайта. Мне есть 18 лет.</label></div>'+
     '<details class="more"><summary>Какие данные мы храним</summary><p>Почту, имя, возраст, город, пол, текст «О себе» и фото, если вы его загрузили. Имя, возраст, город, пол, «О себе» и фото видят другие зарегистрированные пользователи. Почту и пароль не видит никто, кроме вас. Данные хранятся в облачном сервисе Supabase на серверах в Европе. Это тестовая версия. Профиль и все ваши данные можно удалить в любой момент на странице «Профиль».</p></details>'+
-    '<p class="err" id="err" role="alert"></p><div><button class="btn primary" type="submit" id="submit-btn">Создать профиль</button></div></form>';
+    '<div id="cf-box" class="cfbox"></div><p class="err" id="err" role="alert"></p><div><button class="btn primary" type="submit" id="submit-btn">Создать профиль</button></div></form>';
 }
 function vProfile(){
   const me=state.me;
@@ -949,7 +949,25 @@ function render(){
   afterRender();
   growAll($('#view'));
 }
+/* капча Cloudflare Turnstile (если в config.js задан turnstile) */
+const CAP={token:'',id:null};
+const capKey=()=>((window.KRUZHOK_CONFIG||{}).turnstile||'');
+const capOpt=()=>CAP.token?{captchaToken:CAP.token}:{};
+function capReset(){CAP.token='';try{if(window.turnstile&&CAP.id!==null)window.turnstile.reset(CAP.id);}catch(e){}}
+const capErr=e=>/captcha/i.test((e&&e.message)||'')?'Подтвердите, что вы не робот (галочка выше), и попробуйте ещё раз.':errText(e);
+function capMount(){
+  const box=document.getElementById('cf-box');if(!box||!capKey()||box.childElementCount)return;
+  const draw=()=>{
+    if(!window.turnstile||!document.getElementById('cf-box'))return;
+    CAP.token='';
+    try{CAP.id=window.turnstile.render('#cf-box',{sitekey:capKey(),callback:t=>{CAP.token=t;},'expired-callback':()=>{CAP.token='';},'error-callback':()=>{CAP.token='';},language:'ru'});}catch(e){}
+  };
+  if(window.turnstile)return draw();
+  if(document.getElementById('cf-js'))return setTimeout(capMount,400);
+  const sc=document.createElement('script');sc.id='cf-js';sc.src='https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit';sc.async=true;sc.onload=draw;document.head.appendChild(sc);
+}
 function afterRender(){
+  capMount();
   const v=state.view;
   if(v==='interests')fillInterests();
   if(v==='meetups')fillMeetups();
@@ -2275,8 +2293,8 @@ async function afterAuth(msg,first){
 async function doLogin(){
   const email=$('#li-email').value.trim(),pw=$('#li-pw').value;
   if(!email||!pw)return setErr('Введите почту и пароль.');
-  const r=await sb.auth.signInWithPassword({email,password:pw});
-  if(r.error)return setErr(errText(r.error));
+  const r=await sb.auth.signInWithPassword({email,password:pw,options:capOpt()});
+  if(r.error){capReset();return setErr(capErr(r.error));}
   state.session=r.data.session;
   await afterAuth('С возвращением!');
 }
@@ -2292,8 +2310,8 @@ async function doSignup(){
   if(city.length<2)return setErr('Укажите город.');
   if(!gr)return setErr('Выберите пол.');
   if(!$('#su-consent').checked)return setErr('Поставьте галочку согласия, чтобы продолжить.');
-  const r=await sb.auth.signUp({email,password:pw,options:{data:{name,age,city,gender:gr.value,about,consent:'true'}}});
-  if(r.error)return setErr(errText(r.error));
+  const r=await sb.auth.signUp({email,password:pw,options:Object.assign({data:{name,age,city,gender:gr.value,about,consent:'true'}},capOpt())});
+  if(r.error){capReset();return setErr(capErr(r.error));}
   if(!r.data.session){
     state.notice='Мы отправили письмо на '+email+'. Перейдите по ссылке в нём, затем войдите.';
     state.authMode='login';render();return;

@@ -8,5 +8,6 @@
 
 window.KRUZHOK_CONFIG = {
   url: 'https://mssafqedmlspsdlmqybj.supabase.co',
+  turnstile: '0x4AAAAAAF4piA4oUKCajp-A', // публичный ключ сайта Cloudflare Turnstile (не секретный)
   key: 'sb_publishable_1Xzfmw2T8h7j6D87x0AHxg_sOaRtGwg'
 };

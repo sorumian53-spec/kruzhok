@@ -2442,6 +2442,18 @@ window.addEventListener('beforeinstallprompt',e=>{e.preventDefault();state.insta
 /* ---------- запуск ---------- */
 async function init(){
   window.addEventListener('hashchange',route);
+  let CONFIRMED='';
+  try{
+    /* ссылка из письма: сайт#access_token=…&type=signup или #error=… */
+    const hp=new URLSearchParams((location.hash||'').replace(/^#/,''));
+    if(SB_OK&&hp.get('access_token')&&hp.get('refresh_token')){
+      const r=await sb.auth.setSession({access_token:hp.get('access_token'),refresh_token:hp.get('refresh_token')});
+      CONFIRMED=r.error?'fail':(hp.get('type')==='signup'?'signup':hp.get('type')==='email_change'?'email':'login');
+      history.replaceState(null,'',location.pathname+location.search+'#home');
+    }else if(hp.get('error')||hp.get('error_code')){
+      CONFIRMED='bad';history.replaceState(null,'',location.pathname+location.search+'#profile');
+    }
+  }catch(e){CONFIRMED='fail';}
   if(SB_OK){
     try{const r=await sb.auth.getSession();state.session=r.data.session;}catch(e){}
     sb.auth.onAuthStateChange((ev,session)=>{
@@ -2455,6 +2467,8 @@ async function init(){
     navigator.serviceWorker.addEventListener('message',e=>{const d=e.data;if(d&&d.type==='go')openLink(d.link);});
   }
   route();
+  if(CONFIRMED==='signup'||CONFIRMED==='email')openModal('Почта подтверждена','<p>Готово! Адрес '+(CONFIRMED==='email'?'изменён':'подтверждён')+', вы вошли в свой аккаунт.</p><div class="row"><button class="btn primary" type="button" data-act="close">Продолжить</button></div>');
+  else if(CONFIRMED==='bad'||CONFIRMED==='fail')openModal('Ссылка не сработала','<p>Ссылка из письма устарела или уже использована. Если вы уже подтверждали почту, просто войдите. Если нет, зарегистрируйтесь заново или запросите письмо ещё раз позже.</p><div class="row"><button class="btn primary" type="button" data-act="close">Понятно</button></div>');
   try{const g=new URLSearchParams(location.search).get('go');if(g){history.replaceState(null,'',location.pathname+location.hash);setTimeout(()=>openLink(g),0);}}catch(e){}
 }
 /* ---------- этап 3: фото в чатах, отзывы, напоминания, «собраться рядом» ---------- */

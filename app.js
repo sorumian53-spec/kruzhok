@@ -1332,7 +1332,7 @@ function updBar(kind){
   b.innerHTML='<div class="cq"><b>'+(c.edit?'Изменение сообщения':'Ответ: '+esc(who(m&&m.author).name))+'</b><span>'+esc(snip(m?m.text:'Сообщение',90))+'</span></div><button type="button" class="lnk" data-act="cancel-compose" data-kind="'+kind+'">Отмена</button>';
 }
 function msgInput(kind){return $(kind==='dm'?'#dm-in':'#chat-in');}
-const MSG_MAX=10000,SPOIL_AT=3000;
+const MSG_MAX=10000,SPOIL_AT=700;
 async function submitMsg(kind){
   const dm=kind==='dm',inp=msgInput(kind),txt=inp.value.trim();
   if(!txt)return;
@@ -2033,7 +2033,7 @@ let PINS=[];
 const SET={loaded:false,ok:true,show_typing:true,show_read:true,show_active:true};
 let typSent=0;
 const missingErr=e=>!!e&&(e.code==='PGRST202'||e.code==='PGRST205'||e.code==='42P01'||e.code==='42883'||e.code==='42703'||/does not exist|schema cache|Could not find/i.test(e.message||''));
-// Текст сообщения: длинное (больше 3000 знаков) сворачивается под кнопку.
+// Текст сообщения: длинное (больше 700 знаков) сворачивается под кнопку.
 function bodyHtml(id,text){
   text=String(text||'');
   if(text.length<=SPOIL_AT)return esc(text);

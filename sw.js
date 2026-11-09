@@ -13,6 +13,8 @@ self.addEventListener('push', (e) => {
     body: String(d.body || '').slice(0, 200),
     icon: 'icon-192.png',
     badge: 'icon-192.png',
+    tag: (typeof d.link === 'string' && d.link) ? d.link.slice(0, 100) : 'kruzhok',
+    renotify: true,
     data: { link: typeof d.link === 'string' ? d.link.slice(0, 200) : '' }
   };
   e.waitUntil(self.registration.showNotification(title, opts));

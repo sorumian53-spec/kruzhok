@@ -532,3 +532,13 @@ code{font-family:ui-monospace,Menlo,Consolas,monospace;background:var(--surface-
 .rate{color:#e0a100;letter-spacing:2px}
 .rvrow{padding:8px 0;border-top:1px solid var(--line,#ddd)}
 .cfbox{min-height:0;margin:8px 0}
+
+/* этап 4 */
+.nptab{width:100%;border-collapse:collapse}
+.nptab th,.nptab td{padding:8px 4px;text-align:left;vertical-align:top;border-top:1px solid var(--line,#ddd)}
+.nptab thead th{border-top:0;font-size:.85rem;font-weight:600}
+.nptab tbody th span{display:block;font-weight:400}
+.nptab td{text-align:center;width:22%}
+.nptab input{width:22px;height:22px}
+.mutes{list-style:none;padding:0;margin:0}
+.mutes li{display:flex;justify-content:space-between;gap:10px;padding:6px 0;border-top:1px solid var(--line,#ddd)}

@@ -416,7 +416,7 @@ function vInterest(){
   const mineOwner=isMe(i.owner);
   const actions='<div class="actions">'+
     (joined?'<div class="notify"><label for="notify-sel">Уведомления о встречах</label><select id="notify-sel">'+opts(Object.entries(NOTIFY),i.notify)+'</select></div>':'')+
-    '<button class="btn" type="button" data-act="share-interest" data-id="'+esc(i.id)+'">Поделиться</button>'+
+    (joined?muteBtn('interest',i.id):'')+'<button class="btn" type="button" data-act="share-interest" data-id="'+esc(i.id)+'">Поделиться</button>'+
     (MYBANS.has(i.id)&&!joined?'<button class="btn" type="button" disabled>Доступ закрыт</button>':'<button class="btn'+(joined?' on':' primary')+'" type="button" data-act="join-interest" data-id="'+esc(i.id)+'">'+(joined?'Вы участник':'Вступить')+'</button>')+'</div>';
   const sub='<div class="subtools">'+(mineOwner?'<button class="lnk" type="button" data-act="edit-interest" data-id="'+esc(i.id)+'">Редактировать</button>':'')+
     ((mineOwner||state.status.is_admin)?'<button class="lnk danger" type="button" data-act="del-interest" data-id="'+esc(i.id)+'">Удалить интерес</button>':'')+
@@ -549,7 +549,7 @@ function vThread(){
   const why=BLOCKED.has(id)?'Вы заблокировали этого человека. Разблокировать можно в его профиле.':'Писать можно друзьям и тем, с кем у вас есть общий интерес. Вступите в один из его интересов или добавьте человека в друзья.';
   const blocked=BLOCKED.has(id);
   return '<a class="back" href="#messages">← Все диалоги</a><div class="thread-head">'+avLink(id,'md')+'<div class="who">'+pLink(id)+'<span class="meta">'+ageText(p.age)+' · '+esc(p.city)+'</span></div>'+
-    '<div class="th-acts">'+(HAS_FR&&!blocked&&frState(id)==='none'?'<button class="lnk" type="button" data-act="fr-add" data-id="'+esc(id)+'">В друзья</button>':'')+
+    '<div class="th-acts">'+muteBtn('dm',id)+(HAS_FR&&!blocked&&frState(id)==='none'?'<button class="lnk" type="button" data-act="fr-add" data-id="'+esc(id)+'">В друзья</button>':'')+
     (blocked?'<button class="lnk" type="button" data-act="unblock" data-id="'+esc(id)+'">Разблокировать</button>':'<button class="lnk" type="button" data-act="block" data-id="'+esc(id)+'">Заблокировать</button>')+
     '<button class="lnk" type="button" data-act="report" data-type="user" data-id="'+esc(id)+'">Пожаловаться</button></div></div>'+
     '<div id="dm-safe"></div><div class="dm-list" id="dm-list" aria-live="polite">'+(cache.dm[id]||'<p class="meta empty-chat">Загружаем…</p>')+'</div>'+
@@ -868,7 +868,7 @@ function vProfile(){
     '<a class="btn sm" href="#friends">Друзья'+(state.frIn?'<span class="count">'+state.frIn+'</span>':'')+'</a>'+
     '<button class="btn sm" type="button" data-act="share-site">Позвать друзей</button>'+
     (state.status.is_admin?'<a class="btn sm" href="#admin">Модерация'+(state.openReports?'<span class="count">'+state.openReports+'</span>':'')+'</a>':'')+'</div></div></div>'+
-    galleryHtml()+profileDatingCard()+privacyCard()+
+    galleryHtml()+profileDatingCard()+notifCard()+privacyCard()+
     '<section class="section"><h2 style="margin-bottom:14px">Мои интересы</h2>'+(mine.length?'<div class="chips">'+mine.map(i=>'<a class="chip tint" style="--h:'+esc(i.hue)+';font-size:.95rem;padding:.35em .9em" href="#interest-'+esc(i.id)+'">'+esc(i.title)+'</a>').join('')+'</div>':'<div class="empty"><p>Вы пока не вступили ни в один интерес.</p><a class="btn primary" href="#interests">Найти интерес</a></div>')+'</section>'+
     '<section class="section"><h2 style="margin-bottom:14px">Мои встречи</h2>'+(mymeets.length?'<div class="mlist">'+mymeets.map(cardMeetup).join('')+'</div>':'<div class="empty"><p>Вы пока никуда не записаны.</p><a class="btn primary" href="#meetups">Найти встречу</a></div>')+'</section>'+
     (blocked.length?'<section class="section"><h2 style="margin-bottom:14px">Заблокированные</h2><div class="blist">'+blocked.map(id=>'<div class="brow"><span>'+esc(who(id).name)+'</span><button class="btn sm" type="button" data-act="unblock" data-id="'+esc(id)+'">Разблокировать</button></div>').join('')+'</div></section>':'')+
@@ -980,6 +980,7 @@ function afterRender(){
   if(v==='notifications'||v==='profile')fillPush();
   if(v==='profile'||v==='user')loadDating();
   if(v==='profile')loadSettings();
+  if(['profile','interest','thread'].includes(v))loadNP();
   if(['home','meetups','interest','user'].includes(v))loadRem();
   if(v==='meetups')loadPast();
   limCheck('chat');limCheck('dm');
@@ -1600,8 +1601,8 @@ async function pushSync(){
   try{
     if(!pushCan()||Notification.permission!=='granted'||!state.session)return;
     const reg=await navigator.serviceWorker.ready;
-    const s=await reg.pushManager.getSubscription();
-    if(!s)return;
+    let s=await reg.pushManager.getSubscription();
+    if(!s)s=await reg.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:b64u(VAPID_PUBLIC)});
     const j=s.toJSON();
     await sb.rpc('save_push_subscription',{p_endpoint:j.endpoint,p_p256dh:j.keys.p256dh,p_auth:j.keys.auth});
     PUSH.sub=true;fillPush();
@@ -2228,6 +2229,7 @@ document.addEventListener('change',e=>{
   else if(id==='f-interest'){state.f.interest=t.value;fillMeetups();}
   else if(id==='f-gender'){state.f.gender=t.value;fillMeetups();}
   else if(id==='ps-typing'||id==='ps-read'||id==='ps-active'||id==='ps-remind')run(saveSettings);
+  else if(/^np-[ap]-/.test(id))run(saveNP);
   else if(id==='dm-photo'||id==='chat-photo'){const f=t.files&&t.files[0];t.value='';if(f)photoChosen(id==='dm-photo'?'dm':'chat',f);}
   else if(id==='cat'){state.cat=t.value;fillInterests();}
   else if(id==='fmt'){state.fmt=t.value;fillInterests();}
@@ -2644,6 +2646,79 @@ Object.assign(ACT,{
     else{d.value=ymd(n);t.value=String(n.getHours()).padStart(2,'0')+':00';}
     const ti=$('#mu-title');if(ti){ti.value='Встреча сегодня';ti.focus();ti.select();}
   }
+});
+
+/* ---------- этап 4: настройки уведомлений ---------- */
+const NP={ok:true,loaded:false,loading:false,app:[],push:[],mi:new Set(),md:new Set()};
+const NP_CATS=[
+  ['dm','Личные сообщения','только push на телефон'],
+  ['meetup','Встречи','новые встречи в ваших интересах и записи на ваши встречи'],
+  ['interest','Интересы','новые участники и ответы в ваших темах'],
+  ['friend','Друзья','заявки и принятые заявки'],
+  ['review','Отзывы','новые отзывы о ваших встречах'],
+  ['reminder','Напоминания','о встречах, на которые вы записаны']
+];
+async function loadNP(force){
+  if(!state.me||NP.loading||!NP.ok||(NP.loaded&&!force))return;
+  NP.loading=true;
+  try{
+    const [a,b]=await Promise.all([sb.from('notif_prefs').select('off_app,off_push').eq('user_id',state.me.id).maybeSingle(),
+      sb.from('notif_mutes').select('scope,scope_id').eq('user_id',state.me.id)]);
+    if(a.error||b.error){if(missingErr(a.error||b.error))NP.ok=false;return;}
+    NP.app=a.data?a.data.off_app:[];NP.push=a.data?a.data.off_push:[];
+    NP.mi=new Set(b.data.filter(x=>x.scope==='interest').map(x=>x.scope_id));
+    NP.md=new Set(b.data.filter(x=>x.scope==='dm').map(x=>x.scope_id));
+    NP.loaded=true;
+  }catch(e){}
+  finally{NP.loading=false;}
+  npRefresh();
+}
+function notifCard(){
+  if(!NP.ok||!state.me)return '';
+  return '<div id="np-box">'+npInner()+'</div>';
+}
+function npInner(){
+  if(!NP.loaded)return '<section class="section"><h2 style="margin-bottom:14px">Какие уведомления получать</h2><p class="meta">Загружаем…</p></section>';
+  const row=c=>{
+    const [k,t,d]=c;
+    return '<tr><th scope="row"><b>'+esc(t)+'</b><span class="meta">'+esc(d)+'</span></th>'+
+      '<td>'+(k==='dm'?'<span class="meta">—</span>':'<input type="checkbox" id="np-a-'+k+'" aria-label="'+esc(t)+': в приложении"'+(NP.app.includes(k)?'':' checked')+'>')+'</td>'+
+      '<td><input type="checkbox" id="np-p-'+k+'" aria-label="'+esc(t)+': push на телефон"'+(NP.push.includes(k)||(k!=='dm'&&NP.app.includes(k))?'':' checked')+(k!=='dm'&&NP.app.includes(k)?' disabled':'')+'></td></tr>';
+  };
+  const mi=[...NP.mi].map(id=>({id,t:(interest(id)||{}).title})).filter(x=>x.t);
+  const md=[...NP.md].map(id=>({id,t:(PEOPLE[id]||{}).name})).filter(x=>x.t);
+  const mutes=(mi.length||md.length)?'<h3 style="margin:16px 0 6px">Отключено отдельно</h3><ul class="mutes">'+
+    mi.map(x=>'<li><span>Интерес «'+esc(x.t)+'»</span><button class="lnk" type="button" data-act="mute-int" data-id="'+esc(x.id)+'">Включить</button></li>').join('')+
+    md.map(x=>'<li><span>Личные сообщения от '+esc(x.t)+'</span><button class="lnk" type="button" data-act="mute-dm" data-id="'+esc(x.id)+'">Включить</button></li>').join('')+'</ul>':'';
+  return '<section class="section"><h2 style="margin-bottom:6px">Какие уведомления получать</h2><p class="hint">Чтобы не перегружать себя: отключите лишнее. Отдельный интерес или человека можно отключить на его странице.</p>'+
+    '<div class="dtbox"><table class="nptab"><thead><tr><th></th><th>В приложении</th><th>Push на телефон</th></tr></thead><tbody>'+NP_CATS.map(row).join('')+'</tbody></table>'+mutes+
+    '<details class="more" style="margin-top:12px"><summary>Уведомления приходят редко или с задержкой</summary><p class="meta">Часто виновата экономия заряда на телефоне. Откройте настройки телефона → Приложения → «Кружок» (или Chrome, если сайт не установлен) → Батарея и выберите «Без ограничений». Затем нажмите «Проверить уведомление» выше.</p></details></div></section>';
+}
+async function saveNP(){
+  const app=[],push=[];
+  NP_CATS.forEach(([k])=>{
+    const a=$('#np-a-'+k),p=$('#np-p-'+k);
+    if(a&&!a.checked)app.push(k);
+    if(p&&!p.disabled&&!p.checked)push.push(k);
+  });
+  const r=await sb.rpc('save_notif_prefs',{p_off_app:app,p_off_push:push});
+  if(r.error)throw r.error;
+  NP.app=app;NP.push=push;toast('Настройки уведомлений сохранены.');npRefresh(true);
+}
+const muteBtn=(scope,id)=>'<span class="mb" data-s="'+scope+'" data-i="'+esc(id)+'">'+muteInner(scope,id)+'</span>';
+function npRefresh(force){
+  const act=document.activeElement;
+  const box=$('#np-box');if(box&&(force||!(act&&box.contains(act)&&/^np-/.test(act.id||''))))box.innerHTML=npInner();
+  document.querySelectorAll('.mb').forEach(e=>{e.innerHTML=muteInner(e.dataset.s,e.dataset.i);});
+}
+const muteInner=(scope,id)=>{
+  if(!NP.ok||!NP.loaded)return '';
+  const on=(scope==='interest'?NP.mi:NP.md).has(id);
+  return '<button class="lnk" type="button" data-act="mute-'+(scope==='interest'?'int':'dm')+'" data-id="'+esc(id)+'" aria-pressed="'+on+'">'+(scope==='interest'?(on?'🔕 Уведомления интереса выключены':'🔔 Уведомления интереса включены'):(on?'🔕 Push от него выключены':'🔔 Push от него включены'))+'</button>';
+};
+Object.assign(ACT,{
+  'mute-int':id=>run(async()=>{const on=!NP.mi.has(id);const r=await sb.rpc('set_notif_mute',{p_scope:'interest',p_id:id,p_mute:on});if(r.error)throw r.error;on?NP.mi.add(id):NP.mi.delete(id);toast(on?'Уведомления этого интереса выключены.':'Уведомления этого интереса включены.');npRefresh();}),
+  'mute-dm':id=>run(async()=>{const on=!NP.md.has(id);const r=await sb.rpc('set_notif_mute',{p_scope:'dm',p_id:id,p_mute:on});if(r.error)throw r.error;on?NP.md.add(id):NP.md.delete(id);toast(on?'Push от этого человека выключены.':'Push от этого человека включены.');npRefresh();})
 });
 
 init();

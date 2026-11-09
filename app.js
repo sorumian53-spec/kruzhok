@@ -2310,7 +2310,7 @@ async function doSignup(){
   if(city.length<2)return setErr('Укажите город.');
   if(!gr)return setErr('Выберите пол.');
   if(!$('#su-consent').checked)return setErr('Поставьте галочку согласия, чтобы продолжить.');
-  const r=await sb.auth.signUp({email,password:pw,options:Object.assign({data:{name,age,city,gender:gr.value,about,consent:'true'}},capOpt())});
+  const r=await sb.auth.signUp({email,password:pw,options:Object.assign({data:{name,age,city,gender:gr.value,about,consent:'true'},emailRedirectTo:location.origin+location.pathname},capOpt())});
   if(r.error){capReset();return setErr(capErr(r.error));}
   if(!r.data.session){
     state.notice='Мы отправили письмо на '+email+'. Перейдите по ссылке в нём, затем войдите.';
